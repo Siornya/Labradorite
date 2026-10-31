@@ -1,59 +1,51 @@
-# 本地记忆试用版代码结构
+# 记忆服务代码结构
 
-## 实现范围
+## 定位与进程
 
-TypeScript/Fastify 单实例 headless 服务，模型通过独立 stdio MCP 桥接进程访问。支持原始材料保存、带来源的经历整理提案、修订历史、词法检索、更正关系、在线删除和重启后读取。整理由调用 MCP 的外部模型完成；尚无独立后台模型自动整理、embedding、多用户 ACL、备份恢复或删除账本。
+本项目是通用的 stdio MCP 记忆服务，由调用方 AI 客户端启动独立子进程。QQ 等平台接入、模型运行、自主活动调度、浏览器和电脑操作属于上层 AI 系统。本服务管理活动产生的来源与经历，不执行外部活动或调用模型。
+
+AI 客户端 → stdio MCP → 记忆存储 → SQLite。
+
+一个客户端持有一个服务进程，直接管理数据库。没有 Fastify、HTTP API、后台桥接、网络监听、固定端口或 bearer token。客户端负责进程生命周期，访问边界是操作系统账户及文件权限。独立实例应各自配置数据库；不提供多客户端后台协调或多用户 ACL。
 
 ## 模块
 
-| 模块                  | 职责                                                      |
-| --------------------- | --------------------------------------------------------- |
-| contracts/schemas     | Draft 7 JSON Schema，HTTP 业务校验和 MCP 工具结构共享定义 |
-| contracts/generated   | 从 Schema 生成的 TypeScript 类型                          |
-| domain                | 时钟和 code point 来源定位                                |
-| storage/materials     | SQLite 原子提交、幂等、作用域、经历修订、检索和删除       |
-| transport/app         | 公共错误和健康状态                                        |
-| transport/daemon      | 本机认证、能力状态、业务路由                              |
-| transport/mcp         | 官方 MCP SDK 的工具发现与调用桥接                         |
-| runtime-config、setup | 本机配置校验、凭据生成、MCP 配置导出                      |
-| tests                 | 来源、事务、隔离、重启、经历闭环、配置及真实 MCP 集成     |
+- src/mcp-main.ts：加载必填配置、打开数据库、连接 stdio；stdin 结束、SIGINT/SIGTERM 或传输关闭时释放存储。
+- src/transport/mcp.ts：声明九个工具，直接调用存储；已知错误仅返回代码，未知错误返回 INTERNAL_ERROR。
+- src/storage/materials.ts：来源、经历修订、更正、词法检索、删除和幂等事务。
+- src/runtime-config.ts：检查 database、space、character、world；拒绝未知字段，包括旧 token。
+- src/setup.ts：生成 runtime.json 与使用 Node 绝对路径的 mcp.json；保留合法已有配置。
+- src/contracts：JSON Schema 和生成类型，存储入口执行校验。
+- src/domain：可注入时钟及按 Unicode code point 定义的来源跨度。
 
-目前存储类负责同一提交边界，后续增加后台模型时再拆应用用例；不可新增绕过版本和删除规则的写入入口。
+## 启动与配置
 
-## 运行和安装结构
+Node.js 24。使用 vp install --frozen-lockfile、vp run build、vp run setup；setup 可指定数据目录。活动数据库放仓库之外的本地非同步持久存储。客户端加载生成的 MCP 配置，直接启动 Node；stdout 专用于 MCP，无需另启后台服务。vp run start 与 vp run mcp 均为 stdio 入口，需要传入 runtime.json 路径。
 
-Node.js 24；依赖通过 `vp install --frozen-lockfile` 安装。`vp run build` 后 `vp run setup` 在本机数据目录生成 runtime.json 和 mcp.json，避免将密钥或活动数据库放进仓库。再次 setup 保留现有凭据。客户端直接运行 mcp.json 中的 Node 命令，stdout 仅用于 MCP；不要用打印任务日志的包装命令启动 stdio。
+配置仅有 database（绝对路径）、space、character、world。旧 HTTP 配置不兼容，需在新目录生成配置。继续使用既有 v2 数据时，在新配置中显式指定原数据库及原作用域即可；主体仍为 local-client，保留既有幂等语义。不自动删除旧配置或数据，无 token 环境变量回退和无存储诊断模式。
 
-服务通过 `vp run start <runtime.json绝对路径>` 启动，也支持 FISH_MEMORY_TOKEN、FISH_MEMORY_DB、FISH_MEMORY_SPACE、FISH_MEMORY_CHARACTER、FISH_MEMORY_WORLD 环境配置。数据库父目录必须存在，活动数据库放本地非同步目录。配置文件内有密钥，应按操作系统账户保护；Windows 上 Node mode 参数不能替代 Windows ACL。
+## 存储与语义
 
-headless 固定监听 127.0.0.1:38471，端口独占保证同一网络命名空间仅一个服务实例。MCP 桥接进程允许多个，它们不拥有后台工作队列。服务仅接受配置的 bearer token，拒绝带 Origin 请求；所有持有此 token 的客户端共享一个主体及绑定作用域。
+schema_version=2；支持现有 v2 数据，拒绝 v1、未知版本及未标识的其他应用数据库，不迁移或删除旧文件。初始化原子提交，启用 WAL、FULL 同步和外键。
 
-配置存储后 /health/ready 返回 local-test 就绪；完整能力以 memory_status 为准。没有存储配置则只提供诊断，ready 返回 503。
+材料保留原文、来源类别、speaker 报告、覆盖范围及时间，不代表外部身份与事实已经验证。更正新增材料。经历保留来源、过程、解释、生活线标签、活动状态、未知项和修订历史，由调用方模型提出并标记 model_proposed；引用校验不保证语义真实。
 
-## 数据和事务
-
-数据库 schema_version=2。用户已选择拒绝 v1 旧库，不做迁移，不删除旧文件。未知版本及未标识的其他应用数据库拒绝初始化。首次建表与版本标记原子提交。WAL、FULL 同步及外键启用；当前组织与材料操作均为短同步事务。
-
-材料保存原文、source_kind、speaker、coverage、authored_at、received_at；输入来源是报告，不代表 speaker 身份或外部事实已被验证。coverage 防止处理两章被包装为读完整本书。corrects 引用既有合法来源；更正新增材料，不改原文。
-
-整理提案保存 title、summary、beats、interpretations、thread、activity_state、unknowns 和 source_ids。结构门检查来源存在、作用域和引用闭合，expressed 解释要求角色声明来源。所有结果标记 model_proposed，不宣称语义已核实。独立语义模型复核尚未实现。
-
-修订需要 id、expected_revision 和 base_seq；base_seq 使用空间提交序号作保守集合依赖，新输入令旧提案过期。旧版本保留，可展开历史。所有 operation_id 在主体+空间内跨操作检查，内容摘要使用数据库持久密钥 HMAC；同键不同操作/正文冲突。重试返回引用并重新检查可见性，不缓存可泄露已删内容的正文。
-
-thread 目前是经历上的生活线标签，配合 activity_state 和原始来源记录进度；尚未建立独立 Thread 实体与状态转换 API。时间口径目前为来源 authored_at 和服务提交时间，尚未支持历史接触视角查询。
+整理以空间提交序号 base_seq 检查依赖，修订还需 expected_revision。operation_id 跨操作检查，持久 HMAC 摘要支持重试；重放重新检查可见性，不缓存已删除正文。
 
 ## 检索与治理
 
-memory_recall 同时检索原始材料和最新经历版本。中文使用 bigram 线索，拉丁文字用词线索；按确定性词法匹配分数排序。空 query 浏览近期候选。每次最多扫描当前作用域最近 2000 条材料、500 条经历，超过时报告候选覆盖缺口。不能将空结果视为事件未发生，也不宣称支持无词面交集的语义改述。
+中文 bigram 和拉丁词线索检索，迭代扫描作用域内全部存活材料和最新经历版本，仅保留排名靠前的 limit+1 个候选，不再按最近 2000/500 条截断。计算成本随数据量增长，大规模部署需后续索引优化；尚无向量检索。空 query 按提交序号倒序浏览，before_seq 仅用于空 query 的更早记录翻页。
 
-结果附来源 ID、必要更正和过期提示；来源已被该经历纳入的更正不再误报为遗漏。max_bytes 对序列化 recall JSON 字节数硬限制，放不下则给展开目录和不足标记。单独 memory_read 是显式原文/历史展开，不承诺该 recall 预算。
+支持 kind、organization_status、channel、thread 与时间窗过滤。channel 只匹配材料报告渠道；thread 精确匹配材料或经历标签；这些都不是访问权限。时间窗可选择 received_at 或 authored_at（包含边界）；经历在 received_at 模式使用 recorded_at，authored_at 窗口不猜测经历发生时间。未知撰写时间不补填接收时间。
 
-memory_delete 删除指定来源、其 corrects 后续链和所有依赖经历的完整修订历史。清空原始正文并保留最小 tombstone/操作元数据；旧提交重放和旧提案引用不能复活。无原文摘要缓存或独立向量索引。在线删除不代表数据库介质取证擦除，不保护服务外副本或删除前备份；本版不提供备份恢复入口。
+recall 默认返回原文短片段或明确标记的模型经历片段、命中线索、来源和更正引用，统一标为 historical_background。更正提示检查整个后续链。max_bytes 对完整 recall JSON 作硬预算，必要时退化为 ID 目录；显式 read 展开不受该预算限制。诊断返回扫描、过滤后、匹配和返回计数；不持久化查询日志，不宣称知道模型是否使用结果。
 
-## 验证与协作
+memory_status 返回当前材料/经历/修订数、pending/organized 数量、最早未整理序号、最近整理序号及最近材料。organized 按最新经历版本的引用计算，来源在新版被撤下或依赖经历删除后可回到 pending，不代表真实性确认。旧 body 中的静态状态仅为历史字段，读出时重新计算。提交返回受作用域约束的最多 10 条精确文本重复提示，不自动合并事件。
 
-`vp run check` 包括契约一致性、Oxlint、Oxfmt、类型、构建和测试。未使用 ESLint，已移除 Biome；原生驱动构建许可锁定在 allowScripts。代码 Tab 缩进，宽度 4。
+memory_preview_organize 在不写入时展示字段差异、撤下来源和共享证据的其他经历；共享证据不等于语义矛盾。memory_amend 允许追加来源、过程、解释、未知项，以及替换标题、摘要、生活线和活动状态。基于指定旧修订重建完整提案，复用原子写入和幂等校验；dry_run 返回预览。既有条目的移除/重排仍通过完整提案进行。
 
-集成测试暂时使用固定服务端口，因此运行前应正常停止测试服务；测试不会终止其他进程。测试使用临时数据，不修改用户记忆。
+memory_preview_delete 返回更正闭包、受影响经历和修订数，并对作用域、请求、影响面及序号签发 HMAC preview_token。memory_delete 必须携带该 token，在写事务内重算；空间中任意新写入都会使预览失效。预览令牌不是用户授权证明，上层仍须获得明确删除指令。删除来源会级联更正后续链及依赖经历的全部版本，清空正文，保留最小 tombstone/操作元数据，重放不能恢复。在线删除不等于介质擦除或服务外副本删除，未提供备份恢复入口。
 
-main 为主分支，开发在 dev/ 分支完成后合并；ex-doc 维护研究、使用说明和 Skill，不合入 main。代码不能硬编码组织或个人仓库路径；每次 push 仍需用户明确批准。
+## 验证
+
+vp run check 覆盖契约、Oxlint、Oxfmt、类型、构建和测试。真实 stdio 客户端测试使用临时数据库，验证记忆流程、重启持久化和输入错误，不占用固定端口。Tab 宽度 4，无 ESLint。

@@ -7,4 +7,5 @@ export interface DeleteMemory {
 	 * @maxItems 32
 	 */
 	source_ids: [string, ...string[]];
+	preview_token: string;
 }

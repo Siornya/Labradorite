@@ -3,56 +3,46 @@ import test from "node:test";
 import { resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { createDaemon, DAEMON_PORT, requireToken } from "../src/transport/daemon.js";
-import { MaterialStore } from "../src/storage/materials.js";
-
-test("daemon rejects missing credentials and browser origins", async () => {
-	assert.throws(() => requireToken("short"));
-	const token = "a".repeat(32);
-	const daemon = createDaemon(token);
-	try {
-		assert.equal((await daemon.inject({ url: "/health/live" })).statusCode, 401);
-		assert.equal(
-			(
-				await daemon.inject({
-					url: "/health/live",
-					headers: { authorization: `Bearer ${token}`, origin: "https://example.com" },
-				})
-			).statusCode,
-			401,
-		);
-		assert.equal(
-			(
-				await daemon.inject({
-					url: "/health/live",
-					headers: { authorization: `Bearer ${token}` },
-				})
-			).statusCode,
-			200,
-		);
-	} finally {
-		await daemon.close();
-	}
-});
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 test("model submits and reads original material through stdio MCP", async () => {
-	const token = "d".repeat(32);
-	const daemon = createDaemon(token, {
-		store: new MaterialStore(":memory:"),
-		scope: { space: "test", character: "writer", world: "real" },
-		principal: "client",
-	});
+	const directory = mkdtempSync(join(tmpdir(), "fish-mcp-"));
+	const config = join(directory, "runtime.json");
+	writeFileSync(
+		config,
+		JSON.stringify({
+			database: join(directory, "memory.db"),
+			space: "test",
+			character: "writer",
+			world: "real",
+		}),
+	);
 	const client = new Client({ name: "material-client", version: "1" });
 	try {
-		await daemon.listen({ host: "127.0.0.1", port: DAEMON_PORT });
 		await client.connect(
 			new StdioClientTransport({
 				command: process.execPath,
-				args: [resolve("dist/src/mcp-main.js")],
-				env: { FISH_MEMORY_TOKEN: token },
+				args: [resolve("dist/src/mcp-main.js"), config],
 				stderr: "pipe",
 			}),
 		);
+		assert.equal((await client.listTools()).tools.length, 9);
+		assert.equal(
+			(await client.callTool({ name: "memory_status", arguments: {} })).isError,
+			false,
+		);
+		for (const call of [
+			{ name: "memory_status", arguments: { extra: true } },
+			{ name: "memory_read", arguments: { id: "x", kind: "invalid" } },
+			{ name: "memory_recall", arguments: { query: "x", limit: "2" } },
+			{ name: "memory_submit", arguments: { text: "private-invalid-payload" } },
+		]) {
+			const error = await client.callTool(call);
+			assert.equal(error.isError, true);
+			assert.ok(!JSON.stringify(error).includes("private-invalid-payload"));
+		}
 		const args = {
 			operation_id: "mcp-1",
 			text: "尝试改写主歌，尚未完成。",
@@ -70,6 +60,23 @@ test("model submits and reads original material through stdio MCP", async () => 
 		});
 		assert.equal(read.isError, false);
 		assert.equal(JSON.parse((read.content as { text: string }[])[0]!.text).text, args.text);
+		await client.close();
+		await client.connect(
+			new StdioClientTransport({
+				command: process.execPath,
+				args: [resolve("dist/src/mcp-main.js"), config],
+				stderr: "pipe",
+			}),
+		);
+		const persisted = await client.callTool({
+			name: "memory_read",
+			arguments: { id: receipt.material.id },
+		});
+		assert.equal(persisted.isError, false);
+		assert.equal(
+			JSON.parse((persisted.content as { text: string }[])[0]!.text).text,
+			args.text,
+		);
 		const conflict = await client.callTool({
 			name: "memory_submit",
 			arguments: { ...args, text: "完成" },
@@ -98,16 +105,74 @@ test("model submits and reads original material through stdio MCP", async () => 
 		});
 		assert.equal(organized.isError, false);
 		const ep = unpack(organized).episode;
+		const current = unpack(await client.callTool({ name: "memory_status", arguments: {} }));
+		assert.equal(current.counts.organized, 1);
+		assert.equal(current.counts.pending, 0);
+		const amendment = {
+			operation_id: "amend-mcp",
+			base_seq: current.snapshot_seq,
+			id: ep.id,
+			expected_revision: 1,
+			append_unknowns: ["仍未试听"],
+		};
+		const delta = await client.callTool({
+			name: "memory_amend",
+			arguments: { ...amendment, dry_run: true },
+		});
+		assert.equal(delta.isError, false);
+		assert.equal(unpack(delta).changes[0].field, "unknowns");
+		const fields = Object.fromEntries(
+			Object.entries(ep).filter(([key]) =>
+				[
+					"title",
+					"summary",
+					"source_ids",
+					"beats",
+					"interpretations",
+					"thread",
+					"activity_state",
+					"unknowns",
+				].includes(key),
+			),
+		);
+		assert.equal(
+			(
+				await client.callTool({
+					name: "memory_preview_organize",
+					arguments: {
+						...fields,
+						operation_id: "preview-mcp",
+						base_seq: current.snapshot_seq,
+					},
+				})
+			).isError,
+			false,
+		);
+		assert.equal(
+			(await client.callTool({ name: "memory_amend", arguments: amendment })).isError,
+			false,
+		);
+
 		const history = unpack(
 			await client.callTool({
 				name: "memory_read",
 				arguments: { id: ep.id, kind: "episode" },
 			}),
 		);
-		assert.equal(history.history.length, 1);
+		assert.equal(history.history.length, 2);
+		const preview = unpack(
+			await client.callTool({
+				name: "memory_preview_delete",
+				arguments: { source_ids: [receipt.material.id] },
+			}),
+		);
 		const deleted = await client.callTool({
 			name: "memory_delete",
-			arguments: { operation_id: "delete-mcp", source_ids: [receipt.material.id] },
+			arguments: {
+				operation_id: "delete-mcp",
+				source_ids: [receipt.material.id],
+				preview_token: preview.preview_token,
+			},
 		});
 		assert.equal(deleted.isError, false);
 		assert.equal(
@@ -126,54 +191,6 @@ test("model submits and reads original material through stdio MCP", async () => 
 		);
 	} finally {
 		await client.close();
-		await daemon.close();
-	}
-});
-
-test("stdio clients share one daemon and duplicate daemon cannot bind", async () => {
-	const token = "b".repeat(32);
-	const daemon = createDaemon(token);
-	const duplicate = createDaemon(token);
-	const clients: Client[] = [];
-	try {
-		await daemon.listen({ host: "127.0.0.1", port: DAEMON_PORT });
-		await assert.rejects(duplicate.listen({ host: "127.0.0.1", port: DAEMON_PORT }), {
-			code: "EADDRINUSE",
-		});
-		for (let i = 0; i < 2; i++) {
-			const client = new Client({ name: "integration-test", version: "1" });
-			clients.push(client);
-			await client.connect(
-				new StdioClientTransport({
-					command: process.execPath,
-					args: [resolve("dist/src/mcp-main.js")],
-					env: { FISH_MEMORY_TOKEN: token },
-					stderr: "pipe",
-				}),
-			);
-			assert.deepEqual(
-				(await client.listTools()).tools.map((tool) => tool.name),
-				[
-					"memory_recall",
-					"memory_organize",
-					"memory_delete",
-					"memory_status",
-					"memory_submit",
-					"memory_read",
-				],
-			);
-			const result = await client.callTool({ name: "memory_status", arguments: {} });
-			assert.equal(result.isError, true);
-			assert.deepEqual(result.content, [
-				{ type: "text", text: "memory_capabilities_not_implemented" },
-			]);
-		}
-		await daemon.close();
-		const result = await clients[0]!.callTool({ name: "memory_status", arguments: {} });
-		assert.deepEqual(result.content, [{ type: "text", text: "headless_service_unavailable" }]);
-	} finally {
-		await Promise.all(clients.map((client) => client.close()));
-		await duplicate.close();
-		await daemon.close();
+		rmSync(directory, { recursive: true, force: true });
 	}
 });

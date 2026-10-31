@@ -1,6 +1,6 @@
 {
 	"$schema": "http://json-schema.org/draft-07/schema#",
-	"$id": "urn:fish-memory:recall-memory:v1",
+	"$id": "urn:fish-memory:recall-memory:v2",
 	"title": "RecallMemory",
 	"type": "object",
 	"additionalProperties": false,
@@ -19,6 +19,40 @@
 			"type": "integer",
 			"minimum": 1024,
 			"maximum": 65536
+		},
+		"kind": {
+			"enum": ["material", "episode"]
+		},
+		"organization_status": {
+			"enum": ["pending", "organized"]
+		},
+		"time_basis": {
+			"enum": ["received_at", "authored_at"]
+		},
+		"from": {
+			"type": "string",
+			"maxLength": 64,
+			"minLength": 1
+		},
+		"to": {
+			"type": "string",
+			"maxLength": 64,
+			"minLength": 1
+		},
+		"channel": {
+			"type": "string",
+			"minLength": 1,
+			"maxLength": 128
+		},
+		"thread": {
+			"type": "string",
+			"minLength": 1,
+			"maxLength": 256
+		},
+		"before_seq": {
+			"type": "string",
+			"pattern": "^(0|[1-9][0-9]*)$",
+			"maxLength": 20
 		}
 	}
 }

@@ -107,7 +107,11 @@ test("deletion blocks source reads, episode history, operation replay and new or
 			...source("correction", "保密经历的更正"),
 			corrects: material.id,
 		}).material;
-		const deletion = { operation_id: "erase", source_ids: [material.id] };
+		const deletion = {
+			operation_id: "erase",
+			source_ids: [material.id],
+			preview_token: store.previewDelete(scope, { source_ids: [material.id] }).preview_token,
+		};
 		assert.equal(store.delete("client", scope, deletion).online_blocked, true);
 		assert.equal(store.delete("client", scope, deletion).replayed, true);
 		assert.throws(() => store.read(scope, material.id), { message: "NOT_FOUND" });

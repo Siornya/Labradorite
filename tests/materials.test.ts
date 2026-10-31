@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { MaterialStore } from "../src/storage/materials.js";
-import { createDaemon } from "../src/transport/daemon.js";
 
 const scope = { space: "own", character: "reader", world: "real" };
 const input = {
@@ -121,48 +120,5 @@ test("failed operation insert rolls back material and sequence together", () => 
 		inspection.close();
 		store.close();
 		rmSync(directory, { recursive: true, force: true });
-	}
-});
-
-test("authenticated API persists material and returns explicit conflict", async () => {
-	const token = "c".repeat(32);
-	const daemon = createDaemon(token, {
-		store: new MaterialStore(":memory:"),
-		scope,
-		principal: "client",
-	});
-	const headers = { authorization: `Bearer ${token}` };
-	try {
-		const first = await daemon.inject({
-			method: "POST",
-			url: "/v1/materials",
-			headers,
-			payload: input,
-		});
-		assert.equal(first.statusCode, 201);
-		const id = first.json().material.id;
-		assert.equal((await daemon.inject({ url: `/v1/materials/${id}` })).statusCode, 401);
-		assert.equal(
-			(await daemon.inject({ url: `/v1/materials/${id}`, headers })).json().text,
-			input.text,
-		);
-		assert.equal(
-			(await daemon.inject({ method: "POST", url: "/v1/materials", headers, payload: input }))
-				.statusCode,
-			200,
-		);
-		assert.equal(
-			(
-				await daemon.inject({
-					method: "POST",
-					url: "/v1/materials",
-					headers,
-					payload: { ...input, text: "different" },
-				})
-			).statusCode,
-			409,
-		);
-	} finally {
-		await daemon.close();
 	}
 });

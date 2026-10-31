@@ -1,3 +1,7 @@
+import previewDeleteSchema from "../contracts/schemas/preview-delete.json" with { type: "json" };
+import amendSchema from "../contracts/schemas/amend-memory.json" with { type: "json" };
+import type { PreviewDelete } from "../contracts/generated/preview-delete.js";
+import type { AmendMemory } from "../contracts/generated/amend-memory.js";
 import organizeSchema from "../contracts/schemas/organize-memory.json" with { type: "json" };
 import recallSchema from "../contracts/schemas/recall-memory.json" with { type: "json" };
 import deleteSchema from "../contracts/schemas/delete-memory.json" with { type: "json" };
@@ -12,6 +16,8 @@ import type { SubmitMaterial } from "../contracts/generated/submit-material.js";
 import { SystemClock, type Clock } from "../domain/clock.js";
 
 const validator = new Ajv({ strict: true });
+const validatePreviewDelete = validator.compile<PreviewDelete>(previewDeleteSchema);
+const validateAmend = validator.compile<AmendMemory>(amendSchema);
 const validateOrganization = validator.compile<OrganizeMemory>(organizeSchema);
 const validateRecall = validator.compile<RecallMemory>(recallSchema);
 const validateDelete = validator.compile<DeleteMemory>(deleteSchema);
@@ -35,7 +41,8 @@ export class MaterialError extends Error {
 			| "NOT_FOUND"
 			| "REVISION_CONFLICT"
 			| "STALE_BASIS"
-			| "SOURCE_INVALID",
+			| "SOURCE_INVALID"
+			| "STALE_PREVIEW",
 	) {
 		super(code);
 	}
@@ -59,7 +66,12 @@ export interface Material {
 	speaker: string;
 	coverage: string;
 	authored_at: string | null;
-	organization_status: "pending";
+	organization_status: "pending" | "organized";
+	channel?: string;
+	conversation_id?: string;
+	thread?: string;
+	context_role?: "historical_background";
+	correction_ids?: string[];
 }
 function canonical(value: unknown): string {
 	if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -146,11 +158,7 @@ export class MaterialStore {
 		if (row.character !== scope.character)
 			throw new Error("Space belongs to another character.");
 	}
-	submit(
-		principal: string,
-		scope: MemoryScope,
-		input: unknown,
-	): { material: Material; replayed: boolean } {
+	submit(principal: string, scope: MemoryScope, input: unknown) {
 		if (!validate(input) || Buffer.byteLength(input.text, "utf8") > 65536)
 			throw new MaterialError("VALIDATION_ERROR");
 		if (input.authored_at != null && !validTimestamp(input.authored_at))
@@ -179,7 +187,11 @@ export class MaterialStore {
 					| undefined;
 				if (prior) {
 					if (prior.digest !== digest) throw new MaterialError("IDEMPOTENCY_CONFLICT");
-					return { material: this.read(scope, prior.material), replayed: true };
+					return {
+						material: this.read(scope, prior.material),
+						replayed: true,
+						duplicate_candidates: this.#duplicates(scope, input.text, prior.material),
+					};
 				}
 				if (input.corrects) this.read(scope, input.corrects);
 				this.#db.prepare("UPDATE spaces SET seq=seq+1 WHERE id=?").run(scope.space);
@@ -203,6 +215,9 @@ export class MaterialStore {
 					authored_at: normalized.authored_at,
 					organization_status: "pending",
 					...(input.corrects ? { corrects: input.corrects } : {}),
+					...(input.channel ? { channel: input.channel } : {}),
+					...(input.conversation_id ? { conversation_id: input.conversation_id } : {}),
+					...(input.thread ? { thread: input.thread } : {}),
 				};
 				this.#db
 					.prepare("INSERT INTO materials VALUES (?, ?, ?, ?)")
@@ -210,7 +225,11 @@ export class MaterialStore {
 				this.#db
 					.prepare("INSERT INTO operations VALUES (?, ?, ?, ?, ?)")
 					.run(principal, scope.space, input.operation_id, digest, material.id);
-				return { material, replayed: false };
+				return {
+					material: this.read(scope, material.id),
+					replayed: false,
+					duplicate_candidates: this.#duplicates(scope, input.text, material.id),
+				};
 			})
 			.immediate();
 	}
@@ -221,7 +240,13 @@ export class MaterialStore {
 			)
 			.get(id, scope.space, scope.world, scope.character) as { body: string } | undefined;
 		if (!row) throw new MaterialError("NOT_FOUND");
-		return JSON.parse(row.body) as Material;
+		const material = JSON.parse(row.body) as Material;
+		return {
+			...material,
+			organization_status: this.#organized(id) ? "organized" : "pending",
+			context_role: "historical_background",
+			correction_ids: this.#children(scope, id),
+		};
 	}
 	sequence(scope: MemoryScope): string {
 		const row = this.#db
@@ -274,22 +299,96 @@ export class MaterialStore {
 			})
 			.immediate();
 	}
+	#checkProposal(scope: MemoryScope, input: unknown): asserts input is OrganizeMemory {
+		if (!validateOrganization(input) || Boolean(input.id) !== Boolean(input.expected_revision))
+			throw new MaterialError("VALIDATION_ERROR");
+		if (this.sequence(scope) !== input.base_seq) throw new MaterialError("STALE_BASIS");
+		for (const id of input.source_ids) this.read(scope, id);
+		for (const part of [...input.beats, ...input.interpretations])
+			for (const id of part.source_ids) {
+				if (!input.source_ids.includes(id)) throw new MaterialError("SOURCE_INVALID");
+				if (
+					"kind" in part &&
+					part.kind === "expressed" &&
+					this.read(scope, id).source_kind !== "character_statement"
+				)
+					throw new MaterialError("SOURCE_INVALID");
+			}
+		if (input.id && this.episode(scope, input.id).revision !== input.expected_revision)
+			throw new MaterialError("REVISION_CONFLICT");
+	}
+	previewOrganization(scope: MemoryScope, input: unknown) {
+		this.#checkProposal(scope, input);
+		const old = input.id ? this.episode(scope, input.id) : undefined;
+		const keys = [
+			"title",
+			"summary",
+			"source_ids",
+			"beats",
+			"interpretations",
+			"thread",
+			"activity_state",
+			"unknowns",
+		] as const;
+		const changes = keys
+			.filter((key) => canonical(old?.[key] ?? null) !== canonical(input[key]))
+			.map((field) => ({ field, before: old?.[field] ?? null, after: input[field] }));
+		const overlapping = new Set<string>();
+		for (const source of input.source_ids) {
+			const rows = this.#db
+				.prepare(
+					"SELECT DISTINCT e.id FROM episodes e JOIN episode_sources es ON es.episode=e.id AND es.revision=e.revision WHERE es.source=? AND e.space=? AND e.world=? AND e.revision=(SELECT MAX(x.revision) FROM episodes x WHERE x.id=e.id)",
+				)
+				.all(source, scope.space, scope.world) as { id: string }[];
+			for (const row of rows) if (row.id !== input.id) overlapping.add(row.id);
+		}
+		return {
+			dry_run: true,
+			snapshot_seq: this.sequence(scope),
+			changes,
+			removed_source_ids:
+				old?.source_ids.filter((id) => !input.source_ids.includes(id)) ?? [],
+			overlapping_episode_ids: [...overlapping],
+			semantic_conflict_check: "not_performed",
+			context_role: "historical_background",
+			semantic_status: "model_proposed",
+		};
+	}
+	amend(principal: string, scope: MemoryScope, input: unknown) {
+		if (!validateAmend(input)) throw new MaterialError("VALIDATION_ERROR");
+		// Reconstruct from the requested immutable revision so a retry has the same digest.
+		const old = this.episode(scope, input.id, input.expected_revision);
+		const {
+			revision: _revision,
+			commit_seq: _seq,
+			recorded_at: _time,
+			semantic_status: _semantic,
+			stale: _stale,
+			...body
+		} = old;
+		const proposal = {
+			...body,
+			operation_id: input.operation_id,
+			base_seq: input.base_seq,
+			expected_revision: input.expected_revision,
+			source_ids: [...new Set([...old.source_ids, ...(input.append_source_ids ?? [])])],
+			beats: [...old.beats, ...(input.append_beats ?? [])],
+			interpretations: [...old.interpretations, ...(input.append_interpretations ?? [])],
+			unknowns: [...new Set([...old.unknowns, ...(input.append_unknowns ?? [])])],
+			title: input.title ?? old.title,
+			summary: input.summary ?? old.summary,
+			thread: input.thread === undefined ? old.thread : input.thread,
+			activity_state: input.activity_state ?? old.activity_state,
+		};
+		return input.dry_run
+			? this.previewOrganization(scope, proposal)
+			: this.organize(principal, scope, proposal);
+	}
 	organize(principal: string, scope: MemoryScope, input: unknown) {
 		if (!validateOrganization(input) || Boolean(input.id) !== Boolean(input.expected_revision))
 			throw new MaterialError("VALIDATION_ERROR");
 		const operation = this.#operation(principal, scope, "organize", input, () => {
-			if (this.sequence(scope) !== input.base_seq) throw new MaterialError("STALE_BASIS");
-			for (const id of input.source_ids) this.read(scope, id);
-			for (const part of [...input.beats, ...input.interpretations])
-				for (const id of part.source_ids) {
-					if (!input.source_ids.includes(id)) throw new MaterialError("SOURCE_INVALID");
-					if (
-						"kind" in part &&
-						part.kind === "expressed" &&
-						this.read(scope, id).source_kind !== "character_statement"
-					)
-						throw new MaterialError("SOURCE_INVALID");
-				}
+			this.#checkProposal(scope, input);
 			const id = input.id ?? randomUUID();
 			let revision = 1;
 			if (input.id) {
@@ -349,129 +448,355 @@ export class MaterialStore {
 			.all(id, scope.space, scope.world) as { revision: number }[];
 		return rows.map((row) => this.episode(scope, id, row.revision));
 	}
+	#organized(id: string): boolean {
+		return Boolean(
+			this.#db
+				.prepare(
+					"SELECT 1 FROM episode_sources es JOIN episodes e ON e.id=es.episode AND e.revision=es.revision WHERE es.source=? AND e.revision=(SELECT MAX(x.revision) FROM episodes x WHERE x.id=e.id) LIMIT 1",
+				)
+				.get(id),
+		);
+	}
+	#duplicates(scope: MemoryScope, text: string, id: string) {
+		const matches = (
+			this.#db
+				.prepare(
+					"SELECT id FROM materials m WHERE space=? AND world=? AND id!=? AND json_extract(body,'$.text')=? AND NOT EXISTS(SELECT 1 FROM tombstones t WHERE t.id=m.id) ORDER BY rowid DESC LIMIT 11",
+				)
+				.all(scope.space, scope.world, id, text) as { id: string }[]
+		).map((row) => row.id);
+		return {
+			ids: matches.slice(0, 10),
+			truncated: matches.length > 10,
+			match: "exact_text",
+			automatically_merged: false,
+		};
+	}
+	#children(scope: MemoryScope, id: string): string[] {
+		return (
+			this.#db
+				.prepare(
+					"SELECT id FROM materials m WHERE space=? AND world=? AND json_extract(body,'$.corrects')=? AND NOT EXISTS(SELECT 1 FROM tombstones t WHERE t.id=m.id)",
+				)
+				.all(scope.space, scope.world, id) as { id: string }[]
+		).map((row) => row.id);
+	}
+	#descendants(scope: MemoryScope, ids: string[]): string[] {
+		const visited = new Set(ids),
+			queue = [...ids];
+		for (let i = 0; i < queue.length; i++)
+			for (const id of this.#children(scope, queue[i]!))
+				if (!visited.has(id)) {
+					visited.add(id);
+					queue.push(id);
+				}
+		return [...visited].sort();
+	}
+	status(scope: MemoryScope) {
+		const snapshot_seq = this.sequence(scope);
+		const materials = this.#db
+			.prepare(
+				"SELECT id,body FROM materials m WHERE space=? AND world=? AND NOT EXISTS(SELECT 1 FROM tombstones t WHERE t.id=m.id) ORDER BY rowid DESC",
+			)
+			.iterate(scope.space, scope.world) as Iterable<{ id: string; body: string }>;
+		let total = 0,
+			organized = 0,
+			oldestPending: string | null = null;
+		const recent: { id: string; commit_seq: string; received_at: string }[] = [];
+		for (const row of materials) {
+			const m = JSON.parse(row.body) as Material;
+			total++;
+			if (this.#organized(row.id)) organized++;
+			else oldestPending = m.commit_seq;
+			if (recent.length < 5)
+				recent.push({ id: row.id, commit_seq: m.commit_seq, received_at: m.received_at });
+		}
+		const episodes = this.#db
+			.prepare(
+				"SELECT COUNT(DISTINCT id) AS total, COUNT(*) AS revisions, MAX(CAST(json_extract(body,'$.commit_seq') AS INTEGER)) AS latest FROM episodes WHERE space=? AND world=?",
+			)
+			.get(scope.space, scope.world) as {
+			total: number;
+			revisions: number;
+			latest: number | null;
+		};
+		return {
+			materials: true,
+			organization: "external_model_proposals",
+			deletion: "preview_required",
+			recall: "lexical_full_scan",
+			snapshot_seq,
+			counts: {
+				materials: total,
+				pending: total - organized,
+				organized,
+				episodes: episodes.total,
+				episode_revisions: episodes.revisions,
+			},
+			oldest_pending_seq: oldestPending,
+			latest_organization_seq: episodes.latest === null ? null : String(episodes.latest),
+			organization_complete: total === organized,
+			recent_materials: recent,
+			state_meaning: "organized means referenced by a current episode, not verified as true",
+		};
+	}
 	recall(scope: MemoryScope, input: unknown) {
 		if (!validateRecall(input)) throw new MaterialError("VALIDATION_ERROR");
-		const snapshot_seq = this.sequence(scope);
-		const limit = input.limit ?? 6,
+		for (const time of [input.from, input.to])
+			if (time && !validTimestamp(time)) throw new MaterialError("VALIDATION_ERROR");
+		if (input.from && input.to && Date.parse(input.from) > Date.parse(input.to))
+			throw new MaterialError("VALIDATION_ERROR");
+		if (input.kind === "episode" && input.organization_status)
+			throw new MaterialError("VALIDATION_ERROR");
+		const snapshot_seq = this.sequence(scope),
+			limit = input.limit ?? 6,
 			maxBytes = input.max_bytes ?? 16384;
-		const rows = this.#db
-			.prepare(
-				"SELECT m.body FROM materials m WHERE m.space=? AND m.world=? AND NOT EXISTS(SELECT 1 FROM tombstones t WHERE t.id=m.id) ORDER BY rowid DESC LIMIT 2001",
-			)
-			.all(scope.space, scope.world) as { body: string }[];
-		const raw = rows.slice(0, 2000).map((row) => JSON.parse(row.body) as Material);
-		const epRows = this.#db
-			.prepare(
-				"SELECT e.id FROM episodes e WHERE e.space=? AND e.world=? AND e.revision=(SELECT MAX(x.revision) FROM episodes x WHERE x.id=e.id) ORDER BY rowid DESC LIMIT 501",
-			)
-			.all(scope.space, scope.world) as { id: string }[];
-		const episodes: Episode[] = [];
-		for (const row of epRows.slice(0, 500)) {
-			try {
-				episodes.push(this.episode(scope, row.id));
-			} catch (error) {
-				if (!(error instanceof MaterialError)) throw error;
-			}
-		}
 		const q = input.query.normalize("NFKC").toLowerCase().trim();
-		const chars = Array.from(q),
-			tokens = new Set<string>(q.match(/[a-z0-9]+/g) ?? []);
+		if (input.before_seq && q) throw new MaterialError("VALIDATION_ERROR");
+		const tokens = new Set<string>(q.match(/[a-z0-9]+/g) ?? []),
+			chars = Array.from(q);
 		for (let i = 0; i < chars.length - 1; i++)
-			if (/\p{Script=Han}/u.test(chars[i]! + chars[i + 1]!))
+			if (/^\p{Script=Han}{2}$/u.test(chars[i]! + chars[i + 1]!))
 				tokens.add(chars[i]! + chars[i + 1]!);
-		if (tokens.size === 0 && q) tokens.add(q);
-		const score = (text: string) => {
-			const value = text.normalize("NFKC").toLowerCase();
-			return !q
-				? 1
-				: (value.includes(q) ? 10 : 0) +
-						[...tokens].filter((token) => value.includes(token)).length;
+		if (!tokens.size && q) tokens.add(q);
+		type Candidate = {
+			kind: "material" | "episode";
+			id: string;
+			seq: string;
+			text: string;
+			time: string | null;
+			value: Material | Episode;
+			terms: string[];
+			score: number;
 		};
-		const candidates = [
-			...raw.map((material) => ({
-				kind: "material",
-				id: material.id,
-				score: score(material.text),
-				value: material as Material | Episode,
-			})),
-			...episodes.map((ep) => ({
-				kind: "episode",
-				id: ep.id,
-				score: score(JSON.stringify(ep)),
-				value: ep as Material | Episode,
-			})),
-		]
-			.filter((item) => item.score > 0)
-			.sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
-		const output: {
-			snapshot_seq: string;
-			items: unknown[];
-			coverage: {
-				candidate_scan_truncated: boolean;
-				output_truncated: boolean;
-				retrieval_exhaustiveness: string;
-			};
-			budget: { max_bytes: number };
-		} = {
+		const top: Candidate[] = [];
+		let scanned = 0,
+			eligible = 0,
+			matched = 0;
+		const basis = input.time_basis ?? "received_at";
+		const consider = (kind: Candidate["kind"], value: Material | Episode) => {
+			scanned++;
+			if (input.before_seq && BigInt(value.commit_seq) >= BigInt(input.before_seq)) return;
+			const isMaterial = kind === "material",
+				m = value as Material,
+				ep = value as Episode;
+			if (
+				input.organization_status &&
+				(!isMaterial ||
+					(this.#organized(value.id) ? "organized" : "pending") !==
+						input.organization_status)
+			)
+				return;
+			if (input.thread && value.thread !== input.thread) return;
+			// Authored time and channel are material metadata; never invent an episode timestamp or channel.
+			if (input.channel && (!isMaterial || m.channel !== input.channel)) return;
+			const time =
+				basis === "authored_at"
+					? isMaterial
+						? m.authored_at
+						: null
+					: isMaterial
+						? m.received_at
+						: ep.recorded_at;
+			if (
+				(input.from || input.to) &&
+				(!time ||
+					(input.from && Date.parse(time) < Date.parse(input.from)) ||
+					(input.to && Date.parse(time) > Date.parse(input.to)))
+			)
+				return;
+			eligible++;
+			const text = isMaterial
+				? m.text
+				: [
+						ep.title,
+						ep.summary,
+						...ep.beats.map((x) => x.text),
+						...ep.interpretations.map((x) => x.text),
+						...ep.unknowns,
+					].join("\n");
+			const normalized = text.normalize("NFKC").toLowerCase(),
+				terms = [...tokens].filter((t) => normalized.includes(t));
+			const score = q ? (normalized.includes(q) ? 10 : 0) + terms.length : 1;
+			if (!score) return;
+			matched++;
+			top.push({
+				kind,
+				id: value.id,
+				seq: value.commit_seq,
+				text,
+				time,
+				value,
+				terms,
+				score,
+			});
+			top.sort(
+				(a, b) =>
+					b.score - a.score ||
+					(BigInt(a.seq) > BigInt(b.seq)
+						? -1
+						: BigInt(a.seq) < BigInt(b.seq)
+							? 1
+							: a.id.localeCompare(b.id)),
+			);
+			if (top.length > limit + 1) top.pop();
+		};
+		if (input.kind !== "episode")
+			for (const row of this.#db
+				.prepare(
+					"SELECT body FROM materials m WHERE space=? AND world=? AND NOT EXISTS(SELECT 1 FROM tombstones t WHERE t.id=m.id)",
+				)
+				.iterate(scope.space, scope.world) as Iterable<{ body: string }>)
+				consider("material", JSON.parse(row.body));
+		if (input.kind !== "material" && !input.organization_status)
+			for (const row of this.#db
+				.prepare(
+					"SELECT body FROM episodes e WHERE space=? AND world=? AND revision=(SELECT MAX(x.revision) FROM episodes x WHERE x.id=e.id)",
+				)
+				.iterate(scope.space, scope.world) as Iterable<{ body: string }>)
+				consider("episode", JSON.parse(row.body));
+		const output = {
 			snapshot_seq,
-			items: [],
+			context_role: "historical_background",
+			items: [] as unknown[],
 			coverage: {
-				candidate_scan_truncated: rows.length > 2000 || epRows.length > 500,
-				output_truncated: false,
+				candidate_scan_truncated: false,
+				output_truncated: matched > limit,
 				retrieval_exhaustiveness: "unknown",
 			},
 			budget: { max_bytes: maxBytes },
+			diagnostics: {
+				strategy: "lexical_full_scan",
+				scanned,
+				eligible,
+				matched,
+				returned: 0,
+				model_usage: "unknown",
+				time_basis: basis,
+			},
 		};
-		for (const item of candidates) {
-			if (output.items.length >= limit) {
-				output.coverage.output_truncated = true;
-				break;
-			}
-			const sourceIds =
-				item.kind === "episode" ? (item.value as Episode).source_ids : [item.id];
-			const corrections = raw.filter(
-				(material) =>
-					material.corrects &&
-					sourceIds.includes(material.corrects) &&
-					!sourceIds.includes(material.id),
+		for (const item of top.slice(0, limit)) {
+			const sources =
+				item.kind === "material" ? [item.id] : (item.value as Episode).source_ids;
+			const corrections = this.#descendants(scope, sources).filter(
+				(id) => !sources.includes(id),
 			);
+			const index =
+				item.terms.map((t) => item.text.toLowerCase().indexOf(t)).find((i) => i >= 0) ?? 0;
+			const start = Math.max(0, Array.from(item.text.slice(0, index)).length - 40);
+			const excerpt = Array.from(item.text)
+				.slice(start, start + 180)
+				.join("");
 			const packed = {
-				...item,
-				score: undefined,
-				corrections,
+				kind: item.kind,
+				id: item.id,
+				commit_seq: item.seq,
+				time: item.time,
+				time_kind:
+					basis === "authored_at"
+						? "authored_at"
+						: item.kind === "material"
+							? "received_at"
+							: "recorded_at",
+				channel: item.kind === "material" ? (item.value as Material).channel : undefined,
+				thread: item.value.thread,
+				source_kind:
+					item.kind === "material" ? (item.value as Material).source_kind : undefined,
+				excerpt,
+				excerpt_kind: item.kind === "material" ? "source_quote" : "model_proposed_episode",
+				match_reason: q ? "lexical_overlap" : "recent",
+				matched_terms: item.terms.slice(0, 8),
+				organization_status:
+					item.kind === "material"
+						? this.#organized(item.id)
+							? "organized"
+							: "pending"
+						: undefined,
+				source_ids: sources,
+				correction_ids: corrections.slice(0, 8),
+				correction_count: corrections.length,
 				stale: corrections.length > 0,
+				requires_expansion: true,
 			};
 			output.items.push(packed);
+			output.diagnostics.returned = output.items.length;
 			if (Buffer.byteLength(JSON.stringify(output), "utf8") > maxBytes) {
 				output.items.pop();
 				output.coverage.output_truncated = true;
-				const directory = { kind: item.kind, id: item.id, requires_expansion: true };
-				output.items.push(directory);
+				output.items.push({
+					kind: item.kind,
+					id: item.id,
+					stale: corrections.length > 0,
+					requires_expansion: true,
+				});
 				if (Buffer.byteLength(JSON.stringify(output), "utf8") > maxBytes)
 					output.items.pop();
+				output.diagnostics.returned = output.items.length;
 			}
 		}
 		return output;
 	}
+	#deletionImpact(scope: MemoryScope, sourceIds: string[]) {
+		for (const id of sourceIds) this.read(scope, id);
+		const source_ids = this.#descendants(scope, sourceIds),
+			episodes = new Map<string, number>();
+		for (const id of source_ids)
+			for (const row of this.#db
+				.prepare(
+					"SELECT DISTINCT e.id FROM episodes e JOIN episode_sources es ON es.episode=e.id WHERE es.source=? AND e.space=? AND e.world=?",
+				)
+				.all(id, scope.space, scope.world) as { id: string }[]) {
+				if (!episodes.has(row.id))
+					episodes.set(
+						row.id,
+						(
+							this.#db
+								.prepare("SELECT COUNT(*) AS n FROM episodes WHERE id=?")
+								.get(row.id) as { n: number }
+						).n,
+					);
+			}
+		return {
+			source_ids,
+			episodes: [...episodes]
+				.sort(([a], [b]) => a.localeCompare(b))
+				.map(([id, revisions]) => ({ id, revisions })),
+		};
+	}
+	previewDelete(scope: MemoryScope, input: unknown) {
+		if (!validatePreviewDelete(input)) throw new MaterialError("VALIDATION_ERROR");
+		const snapshot_seq = this.sequence(scope),
+			impact = this.#deletionImpact(scope, input.source_ids);
+		const preview_token = createHmac("sha256", this.#key)
+			.update(
+				canonical({
+					scope,
+					snapshot_seq,
+					requested_ids: [...input.source_ids].sort(),
+					impact,
+				}),
+			)
+			.digest("hex");
+		return {
+			dry_run: true,
+			snapshot_seq,
+			...impact,
+			preview_token,
+			backup_cleanup: "not_supported",
+			counts: {
+				materials: impact.source_ids.length,
+				episodes: impact.episodes.length,
+				revisions: impact.episodes.reduce((n, e) => n + e.revisions, 0),
+			},
+		};
+	}
 	delete(principal: string, scope: MemoryScope, input: unknown) {
 		if (!validateDelete(input)) throw new MaterialError("VALIDATION_ERROR");
 		const operation = this.#operation(principal, scope, "delete", input, () => {
-			for (const id of input.source_ids) this.read(scope, id);
-			const deleted = new Set(input.source_ids);
-			const queue = [...input.source_ids];
-			while (queue.length) {
-				const parent = queue.shift()!;
-				const descendants = this.#db
-					.prepare(
-						"SELECT id FROM materials WHERE space=? AND world=? AND json_extract(body, '$.corrects')=?",
-					)
-					.all(scope.space, scope.world, parent) as { id: string }[];
-				for (const child of descendants)
-					if (!deleted.has(child.id)) {
-						deleted.add(child.id);
-						queue.push(child.id);
-					}
-			}
+			const preview = this.previewDelete(scope, { source_ids: input.source_ids });
+			if (preview.preview_token !== input.preview_token)
+				throw new MaterialError("STALE_PREVIEW");
+			const deleted = new Set(preview.source_ids);
 			for (const id of deleted) {
 				this.#db
 					.prepare("INSERT OR IGNORE INTO tombstones VALUES (?,?,?)")

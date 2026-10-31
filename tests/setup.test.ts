@@ -8,7 +8,7 @@ import Database from "better-sqlite3";
 import { MaterialStore } from "../src/storage/materials.js";
 import { loadRuntimeConfig } from "../src/runtime-config.js";
 
-test("setup produces private runtime and usable stdio configuration without rotating secrets", () => {
+test("setup produces private runtime and usable stdio configuration without changing existing settings", () => {
 	const dir = mkdtempSync(join(tmpdir(), "fish-setup-"));
 	try {
 		const run = () =>
@@ -17,8 +17,7 @@ test("setup produces private runtime and usable stdio configuration without rota
 		assert.equal(first.status, 0, first.stderr);
 		const path = join(dir, "runtime.json");
 		const config = loadRuntimeConfig(path);
-		assert.ok(config.token.length >= 32);
-		assert.ok(!first.stdout.includes(config.token));
+		assert.ok(!("token" in config));
 		const mcp = JSON.parse(readFileSync(join(dir, "mcp.json"), "utf8")).mcpServers[
 			"fish-memory"
 		];
@@ -27,6 +26,8 @@ test("setup produces private runtime and usable stdio configuration without rota
 		assert.equal(mcp.args[1], path);
 		assert.equal(run().status, 0);
 		assert.deepEqual(loadRuntimeConfig(path), config);
+		writeFileSync(path, JSON.stringify({ ...config, token: "obsolete" }));
+		assert.throws(() => loadRuntimeConfig(path), /Unknown/);
 		writeFileSync(path, JSON.stringify({ ...config, database: "relative.db" }));
 		assert.throws(() => loadRuntimeConfig(path), /absolute/);
 	} finally {

@@ -1,20 +1,45 @@
 import { loadRuntimeConfig } from "./runtime-config.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { createMcpBridge } from "./transport/mcp.js";
-import { requireToken } from "./transport/daemon.js";
+import { createMemoryServer } from "./transport/mcp.js";
+import { MaterialStore } from "./storage/materials.js";
+
+let store: MaterialStore | undefined;
+function closeStore() {
+	const current = store;
+	store = undefined;
+	current?.close();
+}
 try {
-	const server = createMcpBridge(
-		requireToken(
-			process.argv[2]
-				? loadRuntimeConfig(process.argv[2]).token
-				: process.env.FISH_MEMORY_TOKEN,
-		),
-	);
-	await server.connect(new StdioServerTransport());
-	process.stdin.once("end", () => {
-		void server.close();
+	if (process.argv.length !== 3) throw new Error("Runtime configuration required.");
+	const config = loadRuntimeConfig(process.argv[2]!);
+	store = new MaterialStore(config.database);
+	const server = createMemoryServer({
+		store,
+		scope: { space: config.space, character: config.character, world: config.world },
+		principal: "local-client",
 	});
+	let closing: Promise<void> | undefined;
+	const close = () =>
+		(closing ??= (async () => {
+			try {
+				await server.close();
+			} finally {
+				closeStore();
+			}
+		})());
+	server.onclose = () => {
+		closeStore();
+	};
+	for (const signal of ["SIGINT", "SIGTERM"] as const)
+		process.once(signal, () => {
+			void close();
+		});
+	process.stdin.once("end", () => {
+		void close();
+	});
+	await server.connect(new StdioServerTransport());
 } catch {
-	console.error("Unable to start MCP bridge: check local service credentials.");
+	closeStore();
+	console.error("Unable to start memory MCP: check configuration, database path and scope.");
 	process.exitCode = 1;
 }

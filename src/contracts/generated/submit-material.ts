@@ -8,4 +8,7 @@ export interface SubmitMaterial {
 	coverage: string;
 	authored_at?: string | null;
 	corrects?: string;
+	channel?: string;
+	conversation_id?: string;
+	thread?: string;
 }

@@ -1,7 +1,6 @@
 import { mkdirSync, existsSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { loadRuntimeConfig } from "./runtime-config.js";
 
@@ -16,7 +15,6 @@ if (!existsSync(configPath)) {
 		configPath,
 		JSON.stringify(
 			{
-				token: randomBytes(32).toString("hex"),
 				database: join(directory, "memory-v2.db"),
 				space: "local",
 				character: "character",
@@ -42,5 +40,5 @@ writeFileSync(mcpPath, JSON.stringify(mcp, null, "\t") + "\n", { mode: 0o600 });
 console.info(`Runtime configuration: ${configPath}`);
 console.info(`MCP client configuration: ${mcpPath}`);
 console.info(
-	`Start service: ${JSON.stringify(process.execPath)} ${JSON.stringify(fileURLToPath(new URL("./main.js", import.meta.url)))} ${JSON.stringify(configPath)}`,
+	"Add fish-memory from the MCP configuration to your client; it owns the server process.",
 );

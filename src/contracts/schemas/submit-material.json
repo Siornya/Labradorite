@@ -36,6 +36,21 @@
 			"type": "string",
 			"minLength": 1,
 			"maxLength": 128
+		},
+		"channel": {
+			"type": "string",
+			"minLength": 1,
+			"maxLength": 128
+		},
+		"conversation_id": {
+			"type": "string",
+			"minLength": 1,
+			"maxLength": 256
+		},
+		"thread": {
+			"type": "string",
+			"minLength": 1,
+			"maxLength": 256
 		}
 	}
 }

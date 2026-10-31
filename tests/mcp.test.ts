@@ -28,7 +28,7 @@ test("model submits and reads original material through stdio MCP", async () => 
 				stderr: "pipe",
 			}),
 		);
-		assert.equal((await client.listTools()).tools.length, 9);
+		assert.equal((await client.listTools()).tools.length, 10);
 		assert.equal(
 			(await client.callTool({ name: "memory_status", arguments: {} })).isError,
 			false,

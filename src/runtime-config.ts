@@ -1,8 +1,10 @@
+import { validateEmbeddingConfig, type EmbeddingConfig } from "./providers/embedding.js";
 import { readFileSync } from "node:fs";
 import { isAbsolute } from "node:path";
 
 export interface RuntimeConfig {
 	database: string;
+	embedding?: EmbeddingConfig;
 	space: string;
 	character: string;
 	world: string;
@@ -17,7 +19,7 @@ export function loadRuntimeConfig(path: string): RuntimeConfig {
 	}
 	if (
 		Object.keys(config).some(
-			(key) => !["database", "space", "character", "world"].includes(key),
+			(key) => !["database", "space", "character", "world", "embedding"].includes(key),
 		)
 	)
 		throw new Error(
@@ -28,5 +30,7 @@ export function loadRuntimeConfig(path: string): RuntimeConfig {
 		if (!/^[A-Za-z0-9_-]{1,128}$/.test(config[key] as string))
 			throw new Error("Invalid scope.");
 	}
+	if (config.embedding !== undefined)
+		config.embedding = validateEmbeddingConfig(config.embedding);
 	return config as unknown as RuntimeConfig;
 }

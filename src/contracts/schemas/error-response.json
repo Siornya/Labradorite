@@ -1,0 +1,32 @@
+{
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"$id": "urn:fish-memory:error-response:v1",
+	"title": "ErrorResponse",
+	"description": "Public error envelope. Messages and details must not contain request bodies or secrets.",
+	"type": "object",
+	"additionalProperties": false,
+	"required": ["code", "message", "request_id", "retryable", "details"],
+	"properties": {
+		"code": {
+			"type": "string",
+			"enum": [
+				"VALIDATION_ERROR",
+				"PAYLOAD_TOO_LARGE",
+				"UNSUPPORTED_MEDIA_TYPE",
+				"NOT_FOUND",
+				"INTERNAL_ERROR",
+				"UNAVAILABLE"
+			]
+		},
+		"message": { "type": "string", "minLength": 1 },
+		"request_id": { "type": "string", "minLength": 1 },
+		"retryable": { "type": "boolean" },
+		"details": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"reason": { "const": "memory_capabilities_not_implemented" }
+			}
+		}
+	}
+}

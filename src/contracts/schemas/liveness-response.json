@@ -1,0 +1,14 @@
+{
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"$id": "urn:fish-memory:liveness-response:v1",
+	"title": "LivenessResponse",
+	"description": "Process liveness only; this response does not indicate memory service readiness.",
+	"type": "object",
+	"additionalProperties": false,
+	"required": ["status", "stage", "checked_at"],
+	"properties": {
+		"status": { "const": "alive" },
+		"stage": { "const": "P0-A" },
+		"checked_at": { "type": "string", "format": "date-time" }
+	}
+}

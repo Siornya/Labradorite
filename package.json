@@ -1,0 +1,48 @@
+{
+	"name": "fish-memory-service",
+	"version": "0.0.0",
+	"private": true,
+	"description": "A long-term life memory service for virtual characters.",
+	"type": "module",
+	"scripts": {
+		"contracts:generate": "node scripts/generate-contracts.mjs",
+		"contracts:check": "node scripts/generate-contracts.mjs --check",
+		"format": "oxfmt --write .",
+		"lint": "oxlint src tests scripts && oxfmt --check .",
+		"typecheck": "tsc --noEmit",
+		"build": "tsc",
+		"test": "vp run build && node --test dist/tests/*.test.js",
+		"check": "vp run contracts:check && vp run lint && vp run typecheck && vp run test",
+		"start": "node dist/src/main.js",
+		"mcp": "node dist/src/mcp-main.js",
+		"setup": "node dist/src/setup.js"
+	},
+	"dependencies": {
+		"@modelcontextprotocol/sdk": "1.32.2",
+		"ajv": "8.20.0",
+		"better-sqlite3": "13.0.3",
+		"fastify": "5.12.7",
+		"zod": "4.6.7"
+	},
+	"devDependencies": {
+		"@types/better-sqlite3": "9.6.0",
+		"@types/node": "24.19.2",
+		"json-schema-to-typescript": "16.0.0",
+		"oxfmt": "0.75.0",
+		"oxlint": "1.90.0",
+		"typescript": "7.0.2"
+	},
+	"devEngines": {
+		"packageManager": {
+			"name": "npm",
+			"version": "12.2.1",
+			"onFail": "download"
+		}
+	},
+	"engines": {
+		"node": ">=24 <25"
+	},
+	"allowScripts": {
+		"better-sqlite3@13.0.3": true
+	}
+}

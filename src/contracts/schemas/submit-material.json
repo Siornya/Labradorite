@@ -1,0 +1,41 @@
+{
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"$id": "urn:fish-memory:submit-material:v1",
+	"title": "SubmitMaterial",
+	"type": "object",
+	"additionalProperties": false,
+	"required": ["operation_id", "text", "source_kind", "speaker", "coverage"],
+	"properties": {
+		"operation_id": {
+			"type": "string",
+			"pattern": "^[A-Za-z0-9_-]{1,128}$"
+		},
+		"text": {
+			"type": "string",
+			"minLength": 1,
+			"maxLength": 65536
+		},
+		"source_kind": {
+			"enum": ["user_report", "character_statement", "activity_report"]
+		},
+		"speaker": {
+			"type": "string",
+			"minLength": 1,
+			"maxLength": 128
+		},
+		"coverage": {
+			"type": "string",
+			"minLength": 1,
+			"maxLength": 2048
+		},
+		"authored_at": {
+			"type": ["string", "null"],
+			"maxLength": 64
+		},
+		"corrects": {
+			"type": "string",
+			"minLength": 1,
+			"maxLength": 128
+		}
+	}
+}

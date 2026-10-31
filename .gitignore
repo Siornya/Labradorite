@@ -1,0 +1,14 @@
+.workbuddy/
+.DS_Store
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+*.tsbuildinfo
+*.log
+
+*.db
+*.db-wal
+*.db-shm

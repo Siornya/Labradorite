@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vite-plus/test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -114,6 +114,11 @@ test("failed operation insert rolls back material and sequence together", () => 
 			(inspection.prepare("SELECT count(*) AS n FROM materials").get() as { n: number }).n,
 			0,
 		);
+		for (const table of ["search_chunks", "search_fts", "search_vectors"])
+			assert.equal(
+				(inspection.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n,
+				0,
+			);
 		inspection.exec("DROP TRIGGER fail_operation");
 		assert.equal(store.submit("client", scope, input).material.commit_seq, "1");
 	} finally {

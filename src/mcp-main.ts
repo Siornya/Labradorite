@@ -1,3 +1,4 @@
+import { CompatibleEmbeddingProvider } from "./providers/embedding.js";
 import { loadRuntimeConfig } from "./runtime-config.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createMemoryServer } from "./transport/mcp.js";
@@ -12,7 +13,11 @@ function closeStore() {
 try {
 	if (process.argv.length !== 3) throw new Error("Runtime configuration required.");
 	const config = loadRuntimeConfig(process.argv[2]!);
-	store = new MaterialStore(config.database);
+	store = new MaterialStore(
+		config.database,
+		undefined,
+		config.embedding ? new CompatibleEmbeddingProvider(config.embedding) : undefined,
+	);
 	const server = createMemoryServer({
 		store,
 		scope: { space: config.space, character: config.character, world: config.world },

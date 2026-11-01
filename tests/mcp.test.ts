@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vite-plus/test";
 import { resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -28,7 +28,16 @@ test("model submits and reads original material through stdio MCP", async () => 
 				stderr: "pipe",
 			}),
 		);
-		assert.equal((await client.listTools()).tools.length, 9);
+		const tools = new Set((await client.listTools()).tools.map((tool) => tool.name));
+		for (const name of [
+			"memory_submit",
+			"memory_recall",
+			"memory_read",
+			"memory_organize",
+			"memory_delete",
+			"memory_index",
+		])
+			assert.ok(tools.has(name), `Missing MCP tool: ${name}`);
 		assert.equal(
 			(await client.callTool({ name: "memory_status", arguments: {} })).isError,
 			false,

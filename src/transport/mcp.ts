@@ -1,3 +1,5 @@
+import indexSchema from "../contracts/schemas/index-memory.json" with { type: "json" };
+import { EmbeddingError } from "../providers/embedding.js";
 import previewDeleteSchema from "../contracts/schemas/preview-delete.json" with { type: "json" };
 import amendSchema from "../contracts/schemas/amend-memory.json" with { type: "json" };
 import organizeSchema from "../contracts/schemas/organize-memory.json" with { type: "json" };
@@ -19,6 +21,12 @@ export function createMemoryServer(memory: {
 	);
 	server.setRequestHandler(ListToolsRequestSchema, async () => ({
 		tools: [
+			{
+				name: "memory_index",
+				description:
+					"Build pending semantic chunks in bounded batches using the configured embedding endpoint and persistent daily budget. Sends source text and model-proposed episode text to that endpoint. Explicitly invoke after writes or model changes; no automatic background calls. Restart resumes pending chunks. Does not organize or verify memories.",
+				inputSchema: { ...indexSchema, type: "object" as const },
+			},
 			{
 				name: "memory_preview_delete",
 				description:
@@ -42,7 +50,7 @@ export function createMemoryServer(memory: {
 			{
 				name: "memory_recall",
 				description:
-					"Search all live materials and current episodes with lexical cues. Returns compact historical-background excerpts, not full memory or current user speech. Read IDs and sources before judgment; episode excerpts are model proposals. Supports time, channel, thread, kind and pending filters. Empty query browses newest first; before_seq pages older records. Authored-time windows and channel apply to materials. Diagnostics explain matching/truncation, not whether the model used a result. No semantic search or access control is implied.",
+					"Search live materials and current episodes with FTS5 BM25 and optional cosine embeddings fused by rank. mode=lexical avoids network calls. Hybrid may send the query to the configured embedding endpoint; failures and pending coverage are reported. Returns compact historical-background excerpts, not full memory or current user speech. Read IDs and sources before judgment; episode excerpts are model proposals. Supports time, channel, thread, kind and pending filters. Empty query browses newest first; before_seq pages older records. Authored-time windows and channel apply to materials. Diagnostics explain matching/truncation, not whether the model used a result. Semantic similarity is a retrieval hint, not proof; no access control is implied.",
 				inputSchema: { ...recallSchema, type: "object" as const },
 			},
 			{
@@ -96,6 +104,9 @@ export function createMemoryServer(memory: {
 		try {
 			let result: unknown;
 			switch (params.name) {
+				case "memory_index":
+					result = await memory.store.index(memory.scope, args);
+					break;
 				case "memory_preview_delete":
 					result = memory.store.previewDelete(memory.scope, args);
 					break;
@@ -112,7 +123,7 @@ export function createMemoryServer(memory: {
 					result = memory.store.organize(memory.principal, memory.scope, args);
 					break;
 				case "memory_recall":
-					result = memory.store.recall(memory.scope, args);
+					result = await memory.store.recallAsync(memory.scope, args);
 					break;
 				case "memory_delete":
 					result = memory.store.delete(memory.principal, memory.scope, args);
@@ -154,7 +165,10 @@ export function createMemoryServer(memory: {
 					{
 						type: "text" as const,
 						text: JSON.stringify({
-							code: error instanceof MaterialError ? error.code : "INTERNAL_ERROR",
+							code:
+								error instanceof MaterialError || error instanceof EmbeddingError
+									? error.code
+									: "INTERNAL_ERROR",
 						}),
 					},
 				],

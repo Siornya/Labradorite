@@ -1,3 +1,8 @@
+import indexSchema from "../contracts/schemas/index-memory.json" with { type: "json" };
+import type { IndexMemory } from "../contracts/generated/index-memory.js";
+import { SearchIndex, searchText, type Hit } from "../retrieval/index.js";
+import { analyze, reciprocalRankFusion } from "../retrieval/algorithms.js";
+import { EmbeddingError, type EmbeddingProvider } from "../providers/embedding.js";
 import previewDeleteSchema from "../contracts/schemas/preview-delete.json" with { type: "json" };
 import amendSchema from "../contracts/schemas/amend-memory.json" with { type: "json" };
 import type { PreviewDelete } from "../contracts/generated/preview-delete.js";
@@ -16,6 +21,7 @@ import type { SubmitMaterial } from "../contracts/generated/submit-material.js";
 import { SystemClock, type Clock } from "../domain/clock.js";
 
 const validator = new Ajv({ strict: true });
+const validateIndex = validator.compile<IndexMemory>(indexSchema);
 const validatePreviewDelete = validator.compile<PreviewDelete>(previewDeleteSchema);
 const validateAmend = validator.compile<AmendMemory>(amendSchema);
 const validateOrganization = validator.compile<OrganizeMemory>(organizeSchema);
@@ -97,14 +103,18 @@ function validTimestamp(value: string): boolean {
 export class MaterialStore {
 	readonly #db: Database.Database;
 	readonly #key: string;
+	readonly #search: SearchIndex;
 	constructor(
 		path: string,
 		private readonly clock: Clock = new SystemClock(),
+		provider?: EmbeddingProvider,
 	) {
 		this.#db = new Database(path);
+		this.#search = new SearchIndex(this.#db, clock, provider);
 		try {
 			const version = this.#db.pragma("user_version", { simple: true });
-			if (version !== 0 && version !== 2) throw new Error("Unsupported database schema.");
+			if (version !== 0 && version !== 2 && version !== 3)
+				throw new Error("Unsupported database schema.");
 			if (
 				version === 0 &&
 				this.#db
@@ -136,6 +146,14 @@ export class MaterialStore {
 					})
 					.immediate();
 			}
+			if (version !== 3)
+				this.#db
+					.transaction(() => {
+						this.#search.initialize();
+						this.#db.pragma("user_version = 3");
+					})
+					.immediate();
+			this.#search.verify();
 			this.#key = (
 				this.#db.prepare("SELECT value FROM metadata WHERE key='digest_key'").get() as {
 					value: string;
@@ -222,6 +240,7 @@ export class MaterialStore {
 				this.#db
 					.prepare("INSERT INTO materials VALUES (?, ?, ?, ?)")
 					.run(material.id, scope.space, scope.world, JSON.stringify(material));
+				this.#search.replace(scope, "material", material);
 				this.#db
 					.prepare("INSERT INTO operations VALUES (?, ?, ?, ?, ?)")
 					.run(principal, scope.space, input.operation_id, digest, material.id);
@@ -414,6 +433,7 @@ export class MaterialStore {
 			this.#db
 				.prepare("INSERT INTO episodes VALUES (?,?,?,?,?)")
 				.run(id, revision, scope.space, scope.world, JSON.stringify(episode));
+			this.#search.replace(scope, "episode", episode);
 			for (const source of input.source_ids)
 				this.#db
 					.prepare("INSERT INTO episode_sources VALUES (?,?,?)")
@@ -524,7 +544,8 @@ export class MaterialStore {
 			materials: true,
 			organization: "external_model_proposals",
 			deletion: "preview_required",
-			recall: "lexical_full_scan",
+			recall: "fts5_optional_semantic_rrf",
+			retrieval: this.#search.status(scope),
 			snapshot_seq,
 			counts: {
 				materials: total,
@@ -540,7 +561,7 @@ export class MaterialStore {
 			state_meaning: "organized means referenced by a current episode, not verified as true",
 		};
 	}
-	recall(scope: MemoryScope, input: unknown) {
+	#validateRecall(input: unknown): asserts input is RecallMemory {
 		if (!validateRecall(input)) throw new MaterialError("VALIDATION_ERROR");
 		for (const time of [input.from, input.to])
 			if (time && !validTimestamp(time)) throw new MaterialError("VALIDATION_ERROR");
@@ -548,24 +569,51 @@ export class MaterialStore {
 			throw new MaterialError("VALIDATION_ERROR");
 		if (input.kind === "episode" && input.organization_status)
 			throw new MaterialError("VALIDATION_ERROR");
+		if (input.before_seq && input.query.trim()) throw new MaterialError("VALIDATION_ERROR");
+	}
+	async index(scope: MemoryScope, input: unknown) {
+		if (!validateIndex(input)) throw new MaterialError("VALIDATION_ERROR");
+		const batches = input.max_batches ?? 1;
+		this.sequence(scope);
+		return this.#search.index(scope, batches);
+	}
+	async recallAsync(scope: MemoryScope, input: unknown) {
+		this.#validateRecall(input);
+		this.sequence(scope);
+		let vector: number[] | undefined, reason: string | undefined;
+		if (input.query.trim() && input.mode !== "lexical") {
+			if (!this.#search.provider) reason = "EMBEDDING_DISABLED";
+			else if (!this.#search.status(scope).embedded_chunks) reason = "INDEX_PENDING";
+			else
+				try {
+					vector = await this.#search.query(input.query);
+				} catch (error) {
+					if (!(error instanceof EmbeddingError)) throw error;
+					reason = error.code;
+				}
+		}
+		return this.recall(scope, input, vector, reason);
+	}
+	recall(scope: MemoryScope, input: unknown, vector?: number[], reason?: string) {
+		this.#validateRecall(input);
 		const snapshot_seq = this.sequence(scope),
 			limit = input.limit ?? 6,
 			maxBytes = input.max_bytes ?? 16384;
 		const q = input.query.normalize("NFKC").toLowerCase().trim();
 		if (input.before_seq && q) throw new MaterialError("VALIDATION_ERROR");
-		const tokens = new Set<string>(q.match(/[a-z0-9]+/g) ?? []),
-			chars = Array.from(q);
-		for (let i = 0; i < chars.length - 1; i++)
-			if (/^\p{Script=Han}{2}$/u.test(chars[i]! + chars[i + 1]!))
-				tokens.add(chars[i]! + chars[i + 1]!);
-		if (!tokens.size && q) tokens.add(q);
+		const tokens = new Set(analyze(q));
+		const lexical = q ? this.#search.lexical(scope, q) : [];
+		const semantic = vector ? this.#search.semantic(scope, vector) : [];
+		const lexicalHits = new Map(lexical.map((x) => [x.id, x]));
+		const semanticHits = new Map(semantic.map((x) => [x.id, x]));
+		const eligibleIds = new Set<string>();
 		type Candidate = {
 			kind: "material" | "episode";
 			id: string;
 			seq: string;
 			text: string;
 			time: string | null;
-			value: Material | Episode;
+			value: Material | Episode | undefined;
 			terms: string[];
 			score: number;
 		};
@@ -606,19 +654,12 @@ export class MaterialStore {
 			)
 				return;
 			eligible++;
-			const text = isMaterial
-				? m.text
-				: [
-						ep.title,
-						ep.summary,
-						...ep.beats.map((x) => x.text),
-						...ep.interpretations.map((x) => x.text),
-						...ep.unknowns,
-					].join("\n");
-			const normalized = text.normalize("NFKC").toLowerCase(),
-				terms = [...tokens].filter((t) => normalized.includes(t));
-			const score = q ? (normalized.includes(q) ? 10 : 0) + terms.length : 1;
+			const text = q ? "" : searchText(kind, value);
+			const normalized = text.normalize("NFKC").toLowerCase();
+			const terms = [...tokens].filter((t) => normalized.includes(t));
+			const score = q ? (lexicalHits.has(value.id) || semanticHits.has(value.id) ? 1 : 0) : 1;
 			if (!score) return;
+			eligibleIds.add(value.id);
 			matched++;
 			top.push({
 				kind,
@@ -626,35 +667,62 @@ export class MaterialStore {
 				seq: value.commit_seq,
 				text,
 				time,
-				value,
+				value: q ? undefined : value,
 				terms,
 				score,
 			});
-			top.sort(
-				(a, b) =>
-					b.score - a.score ||
-					(BigInt(a.seq) > BigInt(b.seq)
-						? -1
-						: BigInt(a.seq) < BigInt(b.seq)
-							? 1
-							: a.id.localeCompare(b.id)),
-			);
-			if (top.length > limit + 1) top.pop();
+			if (!q)
+				top.sort(
+					(a, b) =>
+						b.score - a.score ||
+						(BigInt(a.seq) > BigInt(b.seq)
+							? -1
+							: BigInt(a.seq) < BigInt(b.seq)
+								? 1
+								: a.id.localeCompare(b.id)),
+				);
+			if (!q && top.length > limit + 1) top.pop();
 		};
-		if (input.kind !== "episode")
-			for (const row of this.#db
-				.prepare(
-					"SELECT body FROM materials m WHERE space=? AND world=? AND NOT EXISTS(SELECT 1 FROM tombstones t WHERE t.id=m.id)",
-				)
-				.iterate(scope.space, scope.world) as Iterable<{ body: string }>)
-				consider("material", JSON.parse(row.body));
-		if (input.kind !== "material" && !input.organization_status)
-			for (const row of this.#db
-				.prepare(
-					"SELECT body FROM episodes e WHERE space=? AND world=? AND revision=(SELECT MAX(x.revision) FROM episodes x WHERE x.id=e.id)",
-				)
-				.iterate(scope.space, scope.world) as Iterable<{ body: string }>)
-				consider("episode", JSON.parse(row.body));
+		if (q) {
+			const seen = new Set<string>();
+			for (const hit of [...lexical, ...semantic]) {
+				if (seen.has(hit.id) || (input.kind && hit.kind !== input.kind)) continue;
+				seen.add(hit.id);
+				try {
+					consider(
+						hit.kind,
+						hit.kind === "material"
+							? this.read(scope, hit.id)
+							: this.episode(scope, hit.id),
+					);
+				} catch (error) {
+					if (!(error instanceof MaterialError) || error.code !== "NOT_FOUND")
+						throw error;
+				}
+			}
+			const ranks = reciprocalRankFusion([
+				lexical.filter((x) => eligibleIds.has(x.id)).map((x) => x.id),
+				semantic.filter((x) => eligibleIds.has(x.id)).map((x) => x.id),
+			]);
+			const scores = new Map(ranks.map((x) => [x.id, x.score]));
+			for (const candidate of top) candidate.score = scores.get(candidate.id)!;
+			top.sort((a, b) => b.score - a.score || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+		} else {
+			if (input.kind !== "episode")
+				for (const row of this.#db
+					.prepare(
+						"SELECT body FROM materials m WHERE space=? AND world=? AND NOT EXISTS(SELECT 1 FROM tombstones t WHERE t.id=m.id)",
+					)
+					.iterate(scope.space, scope.world) as Iterable<{ body: string }>)
+					consider("material", JSON.parse(row.body));
+			if (input.kind !== "material" && !input.organization_status)
+				for (const row of this.#db
+					.prepare(
+						"SELECT body FROM episodes e WHERE space=? AND world=? AND revision=(SELECT MAX(x.revision) FROM episodes x WHERE x.id=e.id)",
+					)
+					.iterate(scope.space, scope.world) as Iterable<{ body: string }>)
+					consider("episode", JSON.parse(row.body));
+		}
 		const output = {
 			snapshot_seq,
 			context_role: "historical_background",
@@ -666,7 +734,14 @@ export class MaterialStore {
 			},
 			budget: { max_bytes: maxBytes },
 			diagnostics: {
-				strategy: "lexical_full_scan",
+				strategy: !q ? "recent" : vector ? "fts5_cosine_rrf" : "fts5_bm25",
+				semantic: {
+					used: !!vector,
+					reason:
+						reason ??
+						(q && !vector && input.mode !== "lexical" ? "SYNC_LEXICAL_ONLY" : null),
+					pending_chunks: this.#search.status(scope).pending_chunks,
+				},
 				scanned,
 				eligible,
 				matched,
@@ -676,17 +751,29 @@ export class MaterialStore {
 			},
 		};
 		for (const item of top.slice(0, limit)) {
+			item.value ??=
+				item.kind === "material" ? this.read(scope, item.id) : this.episode(scope, item.id);
+			if (q) {
+				item.text = searchText(item.kind, item.value);
+				const normalized = item.text.normalize("NFKC").toLowerCase();
+				item.terms = [...tokens].filter((t) => normalized.includes(t));
+			}
 			const sources =
 				item.kind === "material" ? [item.id] : (item.value as Episode).source_ids;
 			const corrections = this.#descendants(scope, sources).filter(
 				(id) => !sources.includes(id),
 			);
-			const index =
-				item.terms.map((t) => item.text.toLowerCase().indexOf(t)).find((i) => i >= 0) ?? 0;
-			const start = Math.max(0, Array.from(item.text.slice(0, index)).length - 40);
-			const excerpt = Array.from(item.text)
-				.slice(start, start + 180)
-				.join("");
+			const hit: Hit | undefined = lexicalHits.get(item.id) ?? semanticHits.get(item.id);
+			const chars = Array.from(item.text);
+			const chunkStart = hit?.start ?? 0;
+			const chunk = chars.slice(chunkStart, chunkStart + 1024).join("");
+			// Prefer the full query then longer cues; offsets always address unmodified text.
+			const cues = [q, ...item.terms.slice().sort((a, b) => b.length - a.length)].filter(
+				Boolean,
+			);
+			const offset = cues.map((t) => chunk.toLowerCase().indexOf(t)).find((i) => i >= 0) ?? 0;
+			const start = chunkStart + Math.max(0, Array.from(chunk.slice(0, offset)).length - 40);
+			const excerpt = chars.slice(start, start + 180).join("");
 			const packed = {
 				kind: item.kind,
 				id: item.id,
@@ -704,7 +791,16 @@ export class MaterialStore {
 					item.kind === "material" ? (item.value as Material).source_kind : undefined,
 				excerpt,
 				excerpt_kind: item.kind === "material" ? "source_quote" : "model_proposed_episode",
-				match_reason: q ? "lexical_overlap" : "recent",
+				match_reason: !q
+					? "recent"
+					: lexicalHits.has(item.id) && semanticHits.has(item.id)
+						? "lexical_and_semantic"
+						: semanticHits.has(item.id)
+							? "semantic_similarity"
+							: "lexical_overlap",
+				excerpt_basis: item.kind === "material" ? "material.text" : "episode_search_text",
+				excerpt_start: start,
+				excerpt_end: start + Array.from(excerpt).length,
 				matched_terms: item.terms.slice(0, 8),
 				organization_status:
 					item.kind === "material"
@@ -805,9 +901,11 @@ export class MaterialStore {
 					.prepare("SELECT DISTINCT episode FROM episode_sources WHERE source=?")
 					.all(id) as { episode: string }[];
 				for (const ep of affected) {
+					this.#search.remove(ep.episode);
 					this.#db.prepare("DELETE FROM episodes WHERE id=?").run(ep.episode);
 					this.#db.prepare("DELETE FROM episode_sources WHERE episode=?").run(ep.episode);
 				}
+				this.#search.remove(id);
 				this.#db.prepare("UPDATE materials SET body='{}' WHERE id=?").run(id);
 			}
 			return JSON.stringify({

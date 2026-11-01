@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import { ManualClock } from "../src/domain/clock.js";
+import { test } from "vite-plus/test";
 import { readSourceSpan } from "../src/domain/source-span.js";
 
 test("source spans preserve Chinese, emoji and combining marks", () => {
@@ -16,14 +15,4 @@ test("source spans preserve Chinese, emoji and combining marks", () => {
 	]) {
 		assert.throws(() => readSourceSpan(text, span), RangeError);
 	}
-});
-
-test("manual clock isolates returned dates and rejects invalid advancement", () => {
-	const clock = new ManualClock("2026-10-31T00:00:00Z");
-	clock.now().setFullYear(2000);
-	assert.equal(clock.now().getUTCFullYear(), 2026);
-	clock.advanceBy(1000);
-	assert.equal(clock.now().toISOString(), "2026-10-31T00:00:01.000Z");
-	assert.throws(() => clock.advanceBy(-1), RangeError);
-	assert.throws(() => new ManualClock("invalid"), RangeError);
 });

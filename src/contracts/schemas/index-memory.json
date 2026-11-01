@@ -1,0 +1,14 @@
+{
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"$id": "urn:fish-memory:index-memory:v1",
+	"title": "IndexMemory",
+	"type": "object",
+	"additionalProperties": false,
+	"properties": {
+		"max_batches": {
+			"type": "integer",
+			"minimum": 1,
+			"maximum": 16
+		}
+	}
+}

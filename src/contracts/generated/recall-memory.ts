@@ -12,4 +12,8 @@ export interface RecallMemory {
 	channel?: string;
 	thread?: string;
 	before_seq?: string;
+	/**
+	 * Hybrid when configured; lexical forces local-only retrieval. Empty query never calls embedding.
+	 */
+	mode?: "hybrid" | "lexical";
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vite-plus/test";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,6 +26,21 @@ test("setup produces private runtime and usable stdio configuration without chan
 		assert.equal(mcp.args[1], path);
 		assert.equal(run().status, 0);
 		assert.deepEqual(loadRuntimeConfig(path), config);
+		const embedding = {
+			endpoint: "https://example.invalid/v1/embeddings",
+			model: "configured",
+			dimensions: 2,
+			max_requests_per_day: 0,
+			timeout_ms: 1000,
+		};
+		writeFileSync(path, JSON.stringify({ ...config, embedding }));
+		assert.equal(run().status, 0);
+		assert.deepEqual(loadRuntimeConfig(path).embedding, embedding);
+		writeFileSync(
+			path,
+			JSON.stringify({ ...config, embedding: { ...embedding, api_key: "not-permitted" } }),
+		);
+		assert.throws(() => loadRuntimeConfig(path), /EMBEDDING_CONFIG/);
 		writeFileSync(path, JSON.stringify({ ...config, token: "obsolete" }));
 		assert.throws(() => loadRuntimeConfig(path), /Unknown/);
 		writeFileSync(path, JSON.stringify({ ...config, database: "relative.db" }));

@@ -7,15 +7,16 @@
 	"scripts": {
 		"contracts:generate": "node scripts/generate-contracts.mjs",
 		"contracts:check": "node scripts/generate-contracts.mjs --check",
-		"format": "oxfmt --write .",
-		"lint": "oxlint src tests scripts && oxfmt --check .",
+		"format": "vp fmt --write .",
+		"lint": "vp lint src tests scripts && vp fmt --check .",
 		"typecheck": "tsc --noEmit",
-		"build": "node scripts/build.mjs",
-		"test": "vp run build && node --test dist/tests/*.test.js",
-		"check": "vp run contracts:check && vp run lint && vp run typecheck && vp run test",
+		"build": "vp pack",
+		"test": "vp run build && vp test",
+		"check": "vp run contracts:check && vp check && vp run test",
 		"start": "node dist/src/mcp-main.js",
 		"mcp": "node dist/src/mcp-main.js",
-		"setup": "node dist/src/setup.js"
+		"setup": "node dist/src/setup.js",
+		"prepare": "vp config"
 	},
 	"dependencies": {
 		"@modelcontextprotocol/sdk": "1.32.2",
@@ -27,19 +28,23 @@
 		"@types/better-sqlite3": "9.6.0",
 		"@types/node": "24.19.2",
 		"json-schema-to-typescript": "16.0.0",
-		"oxfmt": "0.75.0",
-		"oxlint": "1.90.0",
-		"typescript": "7.0.2"
+		"typescript": "7.0.2",
+		"vite-plus": "1.4.0"
+	},
+	"overrides": {
+		"vite": "npm:@voidzero-dev/vite-plus-core@1.4.0"
 	},
 	"devEngines": {
-		"packageManager": {
-			"name": "npm",
-			"version": "12.2.1",
-			"onFail": "download"
-		}
+		"packageManager": [
+			{
+				"name": "pnpm",
+				"version": "12.16.1",
+				"onFail": "download"
+			}
+		]
 	},
 	"engines": {
-		"node": ">=24 <25"
+		"node": ">=24"
 	},
 	"allowScripts": {
 		"better-sqlite3@13.0.3": true

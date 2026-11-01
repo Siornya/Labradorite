@@ -23,7 +23,7 @@ AI 客户端 → stdio MCP → 记忆存储 → SQLite。
 
 ## 启动与配置
 
-Node.js 24。使用 vp install --frozen-lockfile、vp run build、vp run setup；setup 可指定数据目录。活动数据库放仓库之外的本地非同步持久存储。客户端加载生成的 MCP 配置，直接启动 Node；stdout 专用于 MCP，无需另启后台服务。vp run start 与 vp run mcp 均为 stdio 入口，需要传入 runtime.json 路径。
+Node.js >=24，由 vp 按 engines.node 选择运行时，构建目标为 Node.js 24。使用 vp install --frozen-lockfile、vp run build、vp run setup；setup 可指定数据目录。活动数据库放仓库之外的本地非同步持久存储。客户端加载生成的 MCP 配置，直接启动 Node；stdout 专用于 MCP，无需另启后台服务。vp run start 与 vp run mcp 均为 stdio 入口，需要传入 runtime.json 路径。
 
 基础配置为 database（绝对路径）、space、character、world，另可提供 embedding 对象。旧 HTTP 配置不兼容，需在新目录生成配置。继续使用既有 v2 数据时，在新配置中显式指定原数据库及原作用域即可；主体仍为 local-client，保留既有幂等语义。不自动删除旧配置或数据，无 token 环境变量回退和无存储诊断模式。
 
@@ -57,7 +57,7 @@ memory_preview_delete 返回更正闭包、受影响经历和修订数，并对�
 
 ## 验证
 
-vp run check 覆盖契约、Oxlint、Oxfmt、类型、构建和测试。真实 stdio 客户端测试使用临时数据库，验证记忆流程、重启持久化和输入错误，不占用固定端口。Tab 宽度 4，无 ESLint。
+vp run build 使用 vp pack 打包 Node ESM 服务和 setup 入口，生成源码映射；运行时依赖由 Node 加载。vp run test 先构建再运行 Vitest；直接使用 vp test 时需先执行 vp run build。测试仅发现 tests/ 下的测试，避免扫描备份目录和构建产物。vp run check 覆盖契约、Oxlint、Oxfmt、类型、构建和测试。真实 stdio 客户端测试使用临时数据库，验证记忆流程、重启持久化和输入错误，不占用固定端口。Tab 宽度 4，无 ESLint。
 
 ## Embedding 配置与生命周期
 

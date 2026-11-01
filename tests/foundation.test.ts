@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vite-plus/test";
 import { ManualClock } from "../src/domain/clock.js";
 import { readSourceSpan } from "../src/domain/source-span.js";
 

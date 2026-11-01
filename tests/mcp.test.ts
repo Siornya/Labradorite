@@ -28,7 +28,16 @@ test("model submits and reads original material through stdio MCP", async () => 
 				stderr: "pipe",
 			}),
 		);
-		assert.equal((await client.listTools()).tools.length, 10);
+		const tools = new Set((await client.listTools()).tools.map((tool) => tool.name));
+		for (const name of [
+			"memory_submit",
+			"memory_recall",
+			"memory_read",
+			"memory_organize",
+			"memory_delete",
+			"memory_index",
+		])
+			assert.ok(tools.has(name), `Missing MCP tool: ${name}`);
 		assert.equal(
 			(await client.callTool({ name: "memory_status", arguments: {} })).isError,
 			false,

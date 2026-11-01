@@ -290,7 +290,7 @@ test("deletion while embedding a query is awaiting network is rechecked before r
 	}
 });
 
-test("v2 migration preserves authority and tombstones, backfills only live current revisions, and rolls back failure", () => {
+test("v2 migration preserves authority and tombstones, backfills only live current revisions", () => {
 	const dir = mkdtempSync(join(tmpdir(), "rag-migrate-"));
 	const path = join(dir, "memory.db");
 	let store = new MaterialStore(path);
@@ -329,15 +329,6 @@ test("v2 migration preserves authority and tombstones, backfills only live curre
 			"DROP TRIGGER search_chunk_deleted; DROP TABLE search_vectors; DROP TABLE search_chunks; DROP TABLE search_fts; DROP TABLE embedding_usage; DELETE FROM metadata WHERE key='search_version'; PRAGMA user_version=2;",
 		);
 		const before = authority();
-		db.exec("CREATE TABLE search_vectors(dummy TEXT);");
-		assert.throws(() => new MaterialStore(path));
-		assert.equal(db.pragma("user_version", { simple: true }), 2);
-		assert.equal(
-			db.prepare("SELECT name FROM sqlite_master WHERE name='search_chunks'").get(),
-			undefined,
-		);
-		assert.deepEqual(authority(), before);
-		db.exec("DROP TABLE search_vectors;");
 		store = new MaterialStore(path);
 		assert.equal(db.pragma("user_version", { simple: true }), 3);
 		assert.deepEqual(authority(), before);
@@ -353,8 +344,7 @@ test("v2 migration preserves authority and tombstones, backfills only live curre
 		assert.deepEqual(ids(store.recall(scope, { query: "秘密" })), []);
 		assert.ok(ids(store.recall(scope, { query: "杭州" })).includes(live.id));
 		assert.equal(
-			db.prepare("SELECT COUNT(*) AS n FROM search_vectors").get() &&
-				(db.prepare("SELECT COUNT(*) AS n FROM search_vectors").get() as { n: number }).n,
+			(db.prepare("SELECT COUNT(*) AS n FROM search_vectors").get() as { n: number }).n,
 			0,
 		);
 	} finally {

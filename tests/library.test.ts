@@ -1,6 +1,7 @@
 import { test } from "vite-plus/test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { once } from "node:events";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -91,6 +92,41 @@ test("MCP album, Markdown export and restored instance retain the original media
 		);
 		const video = (await call("memory_import_media", clip)).material;
 		assert.deepEqual(video.media.observed_range_ms, [1000, 2000]);
+		const viewer = spawn(process.execPath, [resolve("dist/src/viewer.js"), runtime, "0"], {
+			stdio: ["ignore", "pipe", "pipe"],
+			windowsHide: true,
+		});
+		const closed = once(viewer, "exit");
+		try {
+			const [startup] = await once(viewer.stdout, "data");
+			const login = new URL(String(startup).trim());
+			assert.equal((await fetch(login.origin)).status, 403);
+			const ticket = await fetch(login, { redirect: "manual" });
+			const cookie = ticket.headers.get("set-cookie")!.split(";")[0]!;
+			const get = (path: string) => fetch(new URL(path, login), { headers: { cookie } });
+			assert.ok((await (await get("/?tab=album")).text()).includes("sample.png"));
+			assert.ok(
+				(await (await get("/episode/" + episode.id)).text()).includes(
+					"/material/" + source.id,
+				),
+			);
+			assert.deepEqual(
+				Buffer.from(await (await get("/media/" + source.id)).arrayBuffer()),
+				photo,
+			);
+			const partial = await fetch(new URL("/media/" + video.id, login), {
+				headers: { cookie, range: "bytes=4-7" },
+			});
+			assert.equal(partial.status, 206);
+			assert.equal(await partial.text(), "ftyp");
+			assert.equal(
+				(await fetch(login.origin, { method: "POST", headers: { cookie } })).status,
+				405,
+			);
+		} finally {
+			viewer.kill();
+			await closed;
+		}
 		const exported = join(root, "export");
 		cli("markdown", runtime, exported);
 		assert.ok(readFileSync(join(exported, "Album.md"), "utf8").includes(source.media.file));

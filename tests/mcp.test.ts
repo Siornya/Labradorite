@@ -24,7 +24,7 @@ test("model submits and reads original material through stdio MCP", async () => 
 		await client.connect(
 			new StdioClientTransport({
 				command: process.execPath,
-				args: [resolve("dist/src/mcp-main.js"), config],
+				args: [resolve("dist/src/mcp-main.js"), config, "--no-webview"],
 				stderr: "pipe",
 			}),
 		);
@@ -73,7 +73,7 @@ test("model submits and reads original material through stdio MCP", async () => 
 		await client.connect(
 			new StdioClientTransport({
 				command: process.execPath,
-				args: [resolve("dist/src/mcp-main.js"), config],
+				args: [resolve("dist/src/mcp-main.js"), config, "--no-webview"],
 				stderr: "pipe",
 			}),
 		);

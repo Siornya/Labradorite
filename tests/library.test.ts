@@ -15,7 +15,7 @@ test("MCP album, Markdown export and restored instance retain the original media
 		client.connect(
 			new StdioClientTransport({
 				command: process.execPath,
-				args: [resolve("dist/src/mcp-main.js"), path],
+				args: [resolve("dist/src/mcp-main.js"), path, "--no-webview"],
 				stderr: "pipe",
 			}),
 		);

@@ -68,7 +68,7 @@ test("stdio MCP indexes through compatible HTTP embeddings and returns source-ba
 		await client.connect(
 			new StdioClientTransport({
 				command: process.execPath,
-				args: [resolve("dist/src/mcp-main.js"), path],
+				args: [resolve("dist/src/mcp-main.js"), path, "--no-webview"],
 				stderr: "pipe",
 			}),
 		);

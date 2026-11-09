@@ -323,7 +323,20 @@ const server = createServer((req, res) => {
 		fail((error as NodeJS.ErrnoException).code === "ENOENT" ? 404 : 500);
 	}
 });
-server.listen(Number(portText), "127.0.0.1", () => {
+// A managed viewer also exits if its MCP parent terminates unexpectedly.
+if (process.send) process.once("disconnect", () => process.exit(0));
+function listen(port: number) {
+	server.once("error", (error: NodeJS.ErrnoException) => {
+		if (process.send && error.code === "EADDRINUSE" && port !== 0) {
+			listen(0);
+			return;
+		}
+		console.error("无法启动查看器：" + error.message);
+		process.exit(1);
+	});
+	server.listen(port, "127.0.0.1");
+}
+server.once("listening", () => {
 	const address = server.address();
 	if (!address || typeof address !== "object") return;
 	const url = `http://127.0.0.1:${address.port}/open/${secret}`;
@@ -344,3 +357,5 @@ server.listen(Number(portText), "127.0.0.1", () => {
 		browser.unref();
 	}
 });
+
+listen(Number(portText));

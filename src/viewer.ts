@@ -1,19 +1,51 @@
-import Database from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
+import { spawn } from "node:child_process";
+import { homedir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
-import { createReadStream, statSync } from "node:fs";
+import { createReadStream, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { loadRuntimeConfig } from "./runtime-config.js";
 import type { Material, Episode } from "./storage/materials.js";
 
-const [runtime, portText = "4317"] = process.argv.slice(2);
-if (!runtime || !/^\d+$/.test(portText) || Number(portText) > 65535)
-	throw new Error("Usage: viewer runtime.json [port]");
+const args = process.argv.slice(2);
+if (args.includes("--help")) {
+	console.log(
+		"Labradorite Viewer [runtime.json] [port] [--open]\n使用默认记忆库，或指定已有的 runtime.json。默认端口 4317。",
+	);
+	process.exit(0);
+}
+const positional = args.filter((arg) => arg !== "--open");
+const [
+	runtime = process.env.LABRADORITE_RUNTIME ??
+		join(
+			process.env.LOCALAPPDATA ?? join(homedir(), ".local", "share"),
+			"fish-memory-test",
+			"runtime.json",
+		),
+	portText = "4317",
+] = positional;
+if (positional.length > 2 || !/^\d+$/.test(portText) || Number(portText) > 65535)
+	throw new Error("Usage: Labradorite Viewer [runtime.json] [port] [--open]");
+if (!existsSync(runtime)) {
+	console.error(
+		"找不到记忆库配置：" +
+			runtime +
+			"\n请指定已有 runtime.json 的路径。Windows 用户也可把配置文件拖到启动器上。",
+	);
+	process.exit(1);
+}
 const config = loadRuntimeConfig(runtime);
-const scope = [config.space, config.world, config.character];
-const db = new Database(config.database, { readonly: true, fileMustExist: true });
-if (db.pragma("user_version", { simple: true }) !== 3)
+if (!existsSync(config.database)) {
+	console.error(
+		"配置中的记忆数据库尚未创建：" + config.database + "\n请先启动记忆服务，再打开查看器。",
+	);
+	process.exit(1);
+}
+const db = new DatabaseSync(config.database, { readOnly: true });
+if (db.prepare("PRAGMA user_version").get()?.user_version !== 3)
 	throw new Error("Viewer requires a v3 memory database");
+const scope = [config.space, config.world, config.character];
 const materialFrom =
 	" FROM materials m JOIN spaces s ON s.id=m.space WHERE m.space=? AND m.world=? AND s.character=? AND NOT EXISTS(SELECT 1 FROM tombstones t WHERE t.id=m.id)";
 const episodeFrom =
@@ -217,6 +249,22 @@ const server = createServer((req, res) => {
 });
 server.listen(Number(portText), "127.0.0.1", () => {
 	const address = server.address();
-	if (address && typeof address === "object")
-		console.log(`http://127.0.0.1:${address.port}/open/${secret}`);
+	if (!address || typeof address !== "object") return;
+	const url = `http://127.0.0.1:${address.port}/open/${secret}`;
+	console.log(url);
+	if (args.includes("--open")) {
+		const command =
+			process.platform === "win32"
+				? "rundll32.exe"
+				: process.platform === "darwin"
+					? "open"
+					: "xdg-open";
+		const browser = spawn(
+			command,
+			process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url],
+			{ stdio: "ignore", windowsHide: true },
+		);
+		browser.on("error", () => console.error("请在浏览器中打开上方链接。"));
+		browser.unref();
+	}
 });

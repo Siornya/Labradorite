@@ -1,3 +1,4 @@
+import { importMedia } from "../storage/media.js";
 import indexSchema from "../contracts/schemas/index-memory.json" with { type: "json" };
 import { EmbeddingError } from "../providers/embedding.js";
 import previewDeleteSchema from "../contracts/schemas/preview-delete.json" with { type: "json" };
@@ -13,6 +14,7 @@ export function createMemoryServer(memory: {
 	store: MaterialStore;
 	scope: MemoryScope;
 	principal: string;
+	database?: string;
 }) {
 	memory.store.bindScope(memory.scope);
 	const server = new Server(
@@ -21,6 +23,36 @@ export function createMemoryServer(memory: {
 	);
 	server.setRequestHandler(ListToolsRequestSchema, async () => ({
 		tools: [
+			{
+				name: "memory_album",
+				description:
+					"Browse media from the current world, newest imports first. Pass next as before to continue.",
+				inputSchema: {
+					type: "object" as const,
+					properties: { before: { type: "string" } },
+					additionalProperties: false,
+				},
+			},
+			{
+				name: "memory_import_media",
+				description:
+					"Archive a photo or video staged in the configured database inbox. Report what was actually observed in material.coverage. The returned material ID can be cited in episodes.",
+				inputSchema: {
+					type: "object" as const,
+					required: ["filename", "material"],
+					properties: {
+						filename: { type: "string" },
+						observed_range_ms: {
+							type: "array",
+							minItems: 2,
+							maxItems: 2,
+							items: { type: "integer", minimum: 0 },
+						},
+						material: submitSchema,
+					},
+					additionalProperties: false,
+				},
+			},
 			{
 				name: "memory_index",
 				description:
@@ -104,6 +136,33 @@ export function createMemoryServer(memory: {
 		try {
 			let result: unknown;
 			switch (params.name) {
+				case "memory_album":
+					if (
+						Object.keys(args).some((k) => k !== "before") ||
+						(args.before !== undefined && typeof args.before !== "string")
+					)
+						throw new MaterialError("VALIDATION_ERROR");
+					result = memory.store.album(memory.scope, args.before);
+					break;
+				case "memory_import_media":
+					if (
+						!memory.database ||
+						Object.keys(args).some(
+							(k) => !["filename", "material", "observed_range_ms"].includes(k),
+						) ||
+						typeof args.filename !== "string"
+					)
+						throw new MaterialError("VALIDATION_ERROR");
+					result = await importMedia(
+						memory.database,
+						args.filename,
+						args.material,
+						memory.store,
+						memory.scope,
+						memory.principal,
+						args.observed_range_ms,
+					);
+					break;
 				case "memory_index":
 					result = await memory.store.index(memory.scope, args);
 					break;

@@ -26,7 +26,8 @@ if (!existsSync(configPath)) {
 		{ flag: "wx", mode: 0o600 },
 	);
 }
-loadRuntimeConfig(configPath);
+const runtime = loadRuntimeConfig(configPath);
+mkdirSync(runtime.database + ".inbox", { recursive: true, mode: 0o700 });
 const mcp = {
 	mcpServers: {
 		"fish-memory": {

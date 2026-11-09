@@ -11,7 +11,7 @@ AI 客户端 → stdio MCP → 记忆存储 → SQLite。
 ## 模块
 
 - src/mcp-main.ts：加载必填配置、打开数据库、连接 stdio；stdin 结束、SIGINT/SIGTERM 或传输关闭时释放存储。
-- src/transport/mcp.ts：声明十个工具，直接调用存储；已知错误仅返回代码，未知错误返回 INTERNAL_ERROR。
+- src/transport/mcp.ts：声明十二个工具，直接调用存储；已知错误仅返回代码，未知错误返回 INTERNAL_ERROR。
 - src/storage/materials.ts：来源、经历修订、更正、候选可见性、召回封装、删除和幂等事务。
 - src/retrieval/index.ts：同库全文与向量派生索引、分片、请求用量、分批构建及过期写回防护。
 - src/retrieval/algorithms.ts：中文分析、向量归一化与确定性排名融合。
@@ -87,3 +87,32 @@ memory_index({max_batches:1}) 显式构建待处理片段，每批最多 8 段�
 每次请求前在短事务中持久预留额度，网络在事务外执行。失败和崩溃不退还额度，重启不会重置；上限按数据库、UTC 日期共享，不是金额上限。返回 usage.total_tokens 时记录已知用量，缺失时计为未知，不推算成 0 token。索引失败返回 stopped；召回降级词法并返回 EMBEDDING_DISABLED、INDEX_PENDING、EMBEDDING_BUDGET、EMBEDDING_CONFIG、EMBEDDING_UNAVAILABLE 等原因。局部索引会报告 pending_chunks，不声称语义覆盖完整。旧数据库备份的恢复会同时恢复当时的本地用量记录；没有服务外成本账本。
 
 实现依据：[SQLite FTS5](https://www.sqlite.org/fts5.html)、[Embedding 请求与响应格式](https://developers.openai.com/api/reference/typescript/resources/embeddings/methods/create)。算法参数是本项目初始策略，不代表真实模型评测结论。
+
+## 媒体材料、相册与搬迁
+
+上层客户端把 JPEG、PNG、WebP 或 MP4 原件放进 `<数据库路径>.inbox/`。首次部署或更新后运行 `vp run setup <数据目录>` 创建入口目录。通过 stdio 调用 `memory_import_media`，传入入口目录内的单个文件名及常规材料提交参数。可选的 `observed_range_ms: [1000, 2000]` 记录上层报告的视频起止毫秒。文件类型按头部标识识别，观看范围由调用方报告。服务不会解码分析视频。示例：
+
+```json
+{
+	"filename": "garden.png",
+	"material": {
+		"operation_id": "garden-1",
+		"text": "收到了花园照片",
+		"source_kind": "activity_report",
+		"speaker": "camera",
+		"coverage": "已收到原图，尚无视觉描述"
+	}
+}
+```
+
+媒体字节按 SHA-256 和格式存入同文件系统的 `<数据库路径>.media/`。SQLite v3 的材料记录保存媒体引用、原文件名、大小及文字。相同内容复用文件，不同观察可以分别登记。调用方用返回的材料 ID 组织或修订经历，`memory_read` 展开描述，`memory_album` 按当前空间及世界浏览（每页最多 50 项，将 next 作为下一次的 before）。入口文件由提供者管理。删除材料后，相册和新导出不再包含已删除记录。媒体文件可能被其他记录共享，现有在线删除仅解除引用，原始字节和既有备份仍可能存在。导入过程中若进程意外终止，也可能留下无引用文件。
+
+本地管理入口：
+
+```sh
+vp run library markdown /path/to/runtime.json /path/to/new-vault
+vp run library backup /path/to/runtime.json /path/to/new-backup
+vp run library restore /path/to/new-backup /path/to/new-data
+```
+
+三个命令都要求输出目录尚未存在。Markdown 导出当前作用域的材料、经历各修订、相对来源链接、媒体副本和可打开的 Album.md。可读副本由 SQLite 快照生成。完整备份覆盖数据库内所有空间，包含 SQLite 快照、快照中仍有引用的媒体和校验清单。恢复核验数据库及媒体文件，在新目录重建 runtime.json；重新执行 setup 生成 MCP 配置，如需 embedding 则补上服务配置。备份保留索引及幂等状态；恢复旧快照也会恢复备份时仍存在的记忆。服务外文件、入口目录和 API 凭据不在备份内。

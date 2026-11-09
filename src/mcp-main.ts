@@ -22,6 +22,7 @@ try {
 		store,
 		scope: { space: config.space, character: config.character, world: config.world },
 		principal: "local-client",
+		database: config.database,
 	});
 	let closing: Promise<void> | undefined;
 	const close = () =>

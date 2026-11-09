@@ -1,3 +1,4 @@
+import type { MediaAsset } from "./media.js";
 import indexSchema from "../contracts/schemas/index-memory.json" with { type: "json" };
 import type { IndexMemory } from "../contracts/generated/index-memory.js";
 import { SearchIndex, searchText, type Hit } from "../retrieval/index.js";
@@ -59,6 +60,7 @@ export interface MemoryScope {
 	world: string;
 }
 export interface Material {
+	media?: MediaAsset;
 	id: string;
 	revision: 1;
 	corrects?: string;
@@ -176,14 +178,14 @@ export class MaterialStore {
 		if (row.character !== scope.character)
 			throw new Error("Space belongs to another character.");
 	}
-	submit(principal: string, scope: MemoryScope, input: unknown) {
+	submit(principal: string, scope: MemoryScope, input: unknown, media?: MediaAsset) {
 		if (!validate(input) || Buffer.byteLength(input.text, "utf8") > 65536)
 			throw new MaterialError("VALIDATION_ERROR");
 		if (input.authored_at != null && !validTimestamp(input.authored_at))
 			throw new MaterialError("VALIDATION_ERROR");
 		const normalized = { ...input, authored_at: input.authored_at ?? null };
 		const digest = createHmac("sha256", this.#key)
-			.update(canonical({ scope, input: normalized }))
+			.update(canonical({ scope, input: normalized, ...(media ? { media } : {}) }))
 			.digest("hex");
 		return this.#db
 			.transaction(() => {
@@ -227,6 +229,7 @@ export class MaterialStore {
 					character_id: scope.character,
 					world_id: scope.world,
 					text: input.text,
+					...(media ? { media } : {}),
 					source_kind: input.source_kind,
 					speaker: input.speaker,
 					coverage: input.coverage,
@@ -251,6 +254,32 @@ export class MaterialStore {
 				};
 			})
 			.immediate();
+	}
+	album(scope: MemoryScope, before?: string) {
+		this.sequence(scope);
+		const rows = this.#db
+			.prepare(`SELECT body FROM materials WHERE space=? AND world=? AND json_type(body,'$.media')='object'
+            AND (? IS NULL OR rowid < (SELECT rowid FROM materials WHERE id=? AND space=? AND world=?))
+            ORDER BY rowid DESC LIMIT 51`)
+			.all(
+				scope.space,
+				scope.world,
+				before ?? null,
+				before ?? null,
+				scope.space,
+				scope.world,
+			) as { body: string }[];
+		const items = rows.slice(0, 50).map((row) => {
+			const m = JSON.parse(row.body) as Material;
+			return {
+				id: m.id,
+				media: m.media,
+				description: m.text.slice(0, 180),
+				coverage: m.coverage,
+				received_at: m.received_at,
+			};
+		});
+		return { items, next: rows.length > 50 ? items.at(-1)!.id : null };
 	}
 	read(scope: MemoryScope, id: string): Material {
 		const row = this.#db

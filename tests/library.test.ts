@@ -1,3 +1,4 @@
+import sharp from "sharp";
 import { test } from "vite-plus/test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
@@ -30,10 +31,11 @@ test("MCP album, Markdown export and restored instance retain the original media
 		execFileSync(process.execPath, [resolve("dist/src/setup.js"), root]);
 		const runtime = join(root, "runtime.json");
 		const database = JSON.parse(readFileSync(runtime, "utf8")).database;
-		const photo = Buffer.from(
-			"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
-			"base64",
-		);
+		const photo = await sharp({
+			create: { width: 960, height: 640, channels: 3, background: "#336677" },
+		})
+			.png()
+			.toBuffer();
 		writeFileSync(join(database + ".inbox", "sample.png"), photo);
 		await connect(runtime);
 		const args = {
@@ -104,15 +106,28 @@ test("MCP album, Markdown export and restored instance retain the original media
 			const ticket = await fetch(login, { redirect: "manual" });
 			const cookie = ticket.headers.get("set-cookie")!.split(";")[0]!;
 			const chooser = await fetch(new URL("/choose", login), { headers: { cookie } });
-			assert.ok((await chooser.text()).includes("打开此记忆库"));
-			const select = await fetch(new URL("/select?dir=" + encodeURIComponent(root), login), {
+			assert.ok((await chooser.text()).includes("打开当前记忆库"));
+			const select = await fetch(new URL("/select?current=1", login), {
 				method: "POST",
 				headers: { cookie, origin: login.origin },
 				redirect: "manual",
 			});
 			assert.equal(select.status, 303);
 			const get = (path: string) => fetch(new URL(path, login), { headers: { cookie } });
-			assert.ok((await (await get("/?tab=album")).text()).includes("sample.png"));
+			const album = await (await get("/?tab=album")).text();
+			assert.ok(album.includes("/thumbnail/" + source.id) && album.includes("相册中的照片"));
+			const preview = await get("/thumbnail/" + source.id);
+			assert.equal(preview.headers.get("content-type"), "image/webp");
+			const size = await sharp(Buffer.from(await preview.arrayBuffer())).metadata();
+			assert.deepEqual([size.width, size.height], [480, 320]);
+			const backlinks = await (await get("/material/" + source.id)).text();
+			assert.ok(backlinks.includes("/episode/" + episode.id));
+			const results = await (await get("/search?q=" + encodeURIComponent("照片"))).text();
+			assert.ok(
+				results.includes("/episode/" + episode.id) &&
+					results.includes("/material/" + source.id),
+			);
+
 			assert.ok(
 				(await (await get("/episode/" + episode.id)).text()).includes(
 					"/material/" + source.id,

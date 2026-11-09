@@ -110,11 +110,17 @@ export class MaterialStore {
 		path: string,
 		private readonly clock: Clock = new SystemClock(),
 		provider?: EmbeddingProvider,
+		access: "service" | "search" = "service",
 	) {
-		this.#db = new Database(path);
+		this.#db = new Database(path, {
+			fileMustExist: access === "search",
+			readonly: access === "search" && !provider,
+		});
 		this.#search = new SearchIndex(this.#db, clock, provider);
 		try {
 			const version = this.#db.pragma("user_version", { simple: true });
+			if (access === "search" && version !== 3)
+				throw new Error("Search requires a v3 database.");
 			if (version !== 0 && version !== 2 && version !== 3)
 				throw new Error("Unsupported database schema.");
 			if (
@@ -126,7 +132,7 @@ export class MaterialStore {
 					.all().length !== 0
 			)
 				throw new Error("Refusing to initialize an unrecognized database.");
-			this.#db.pragma("journal_mode = WAL");
+			if (access === "service") this.#db.pragma("journal_mode = WAL");
 			this.#db.pragma("synchronous = FULL");
 			this.#db.pragma("foreign_keys = ON");
 			if (version === 0) {

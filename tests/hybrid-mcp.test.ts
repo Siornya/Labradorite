@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import assert from "node:assert/strict";
 import { test } from "vite-plus/test";
 import { createServer } from "node:http";
@@ -47,7 +48,7 @@ test("stdio MCP indexes through compatible HTTP embeddings and returns source-ba
 		await once(endpoint, "listening");
 		const address = endpoint.address();
 		assert.ok(address && typeof address !== "string");
-		const path = join(directory, "runtime.json");
+		const path = join(directory, "agent-settings.json");
 		writeFileSync(
 			path,
 			JSON.stringify({
@@ -101,6 +102,33 @@ test("stdio MCP indexes through compatible HTTP embeddings and returns source-ba
 			[],
 		);
 		assert.equal(inputs.length, 2);
+		const viewer = spawn(process.execPath, [resolve("dist/src/viewer.js"), path, "0"], {
+			windowsHide: true,
+		});
+		const closed = once(viewer, "exit");
+		try {
+			const [output] = await once(viewer.stdout, "data");
+			const login = new URL(String(output).trim());
+			const ticket = await fetch(login, { redirect: "manual" });
+			const cookie = ticket.headers.get("set-cookie")!.split(";")[0]!;
+			await fetch(new URL("/select?current=1", login), {
+				method: "POST",
+				headers: { cookie, origin: login.origin },
+				redirect: "manual",
+			});
+			const search = new URL("/search", login);
+			search.searchParams.set("q", "脚踏出游");
+			const result = await (await fetch(search, { headers: { cookie } })).text();
+			assert.ok(
+				result.includes("/material/" + receipt.material.id) && result.includes("混合检索"),
+			);
+			search.searchParams.set("mode", "lexical");
+			const local = await (await fetch(search, { headers: { cookie } })).text();
+			assert.ok(!local.includes("/material/" + receipt.material.id));
+		} finally {
+			viewer.kill();
+			await closed;
+		}
 		const preview = await call("memory_preview_delete", { source_ids: [receipt.material.id] });
 		await call("memory_delete", {
 			operation_id: "erase",
@@ -109,7 +137,7 @@ test("stdio MCP indexes through compatible HTTP embeddings and returns source-ba
 		});
 		assert.equal((await call("memory_status", {})).retrieval.chunks, 0);
 		assert.deepEqual((await call("memory_recall", { query: "脚踏出游" })).items, []);
-		assert.equal(inputs.length, 2);
+		assert.equal(inputs.length, 3);
 	} finally {
 		await client.close();
 		endpoint.closeAllConnections();

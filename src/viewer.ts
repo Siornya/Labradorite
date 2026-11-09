@@ -1,3 +1,7 @@
+import sharp from "sharp";
+import { registerViewer } from "./viewer-registry.js";
+import { MaterialStore } from "./storage/materials.js";
+import { CompatibleEmbeddingProvider } from "./providers/embedding.js";
 import { DatabaseSync } from "node:sqlite";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
@@ -41,6 +45,9 @@ const escape = (value: string) =>
 const names = { episodes: "经历", album: "相册", materials: "材料" };
 type Tab = keyof typeof names;
 function layout(tab: Tab | null, content: string) {
+	const searchForm = tab
+		? '<form action="/search"><input type="search" name="q" aria-label="搜索整个记忆库" maxlength="512" placeholder="搜索经历、材料和相册" required><select name="mode" aria-label="检索方式"><option value="hybrid">混合检索</option><option value="lexical">仅本地全文</option></select><button>全库搜索</button></form>'
+		: "";
 	const tabs = Object.entries(names)
 		.map(
 			([key, label]) =>
@@ -48,7 +55,7 @@ function layout(tab: Tab | null, content: string) {
 		)
 		.join("");
 	return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Labradorite · 记忆库</title><style>
-*{box-sizing:border-box}body{margin:0;background:#f6f5f0;color:#233632;font:16px/1.65 "Source Sans 3","Microsoft YaHei",sans-serif}header{background:#153d39;color:#faf6e9;padding:16px max(5vw,24px);display:flex;align-items:center;gap:32px;flex-wrap:wrap}strong,h1,h2{font-family:"DM Serif Text","Songti SC",serif}header strong{font-size:24px}nav{display:flex;gap:20px}a{color:#20665e}nav a{color:inherit;text-decoration:none}nav a[aria-current]{border-bottom:2px solid #d4b879}main{max-width:1024px;margin:32px auto;padding:0 24px 48px}h1{font-size:32px}h2{font-size:20px}article,section{border-bottom:1px solid #cad3ca;padding:15px 0}small{color:#51635d}.grid{display:grid;gap:20px;grid-template-columns:repeat(auto-fit,minmax(min(225px,100%),1fr))}.grid img{width:100%;height:180px;object-fit:cover}.grid article{min-width:0}img,video{display:block;max-width:100%;max-height:65vh}p,h1,h2,a{overflow-wrap:anywhere}p{white-space:pre-wrap}form{display:flex;gap:8px}input,button{font:inherit;padding:6px 12px;border:1px solid #849b90;border-radius:4px}input{max-width:75%}button{background:#205249;color:white;cursor:pointer}</style><header><strong>Labradorite</strong><nav>${tab ? tabs + ' <a href="/choose">切换记忆库</a>' : ""}</nav></header><main>${content}</main></html>`;
+*{box-sizing:border-box}body{margin:0;background:#f6f5f0;color:#233632;font:16px/1.65 "Source Sans 3","Microsoft YaHei",sans-serif}header{background:#153d39;color:#faf6e9;padding:16px max(5vw,24px);display:flex;align-items:center;gap:32px;flex-wrap:wrap}strong,h1,h2{font-family:"DM Serif Text","Songti SC",serif}header strong{font-size:24px}nav{display:flex;gap:20px}a{color:#20665e}nav a{color:inherit;text-decoration:none}nav a[aria-current]{border-bottom:2px solid #d4b879}main{max-width:1024px;margin:32px auto;padding:0 24px 48px}h1{font-size:32px}h2{font-size:20px}article,section{border-bottom:1px solid #cad3ca;padding:15px 0}small{color:#51635d}.grid{display:grid;gap:20px;grid-template-columns:repeat(auto-fit,minmax(min(225px,100%),1fr))}.grid img{width:100%;height:180px;object-fit:cover}.grid article{min-width:0}img,video{display:block;max-width:100%;max-height:65vh}p,h1,h2,a{overflow-wrap:anywhere}p{white-space:pre-wrap}form{display:flex;gap:8px}form{flex-wrap:wrap}input,button,select{font:inherit;padding:6px 12px;border:1px solid #849b90;border-radius:4px}input{max-width:75%}button{background:#205249;color:white;cursor:pointer}</style><header><strong>Labradorite</strong><nav>${tab ? tabs + ' <a href="/choose">切换记忆库</a>' : ""}</nav></header><main>${searchForm}${content}</main></html>`;
 }
 function openLibrary(path: string) {
 	const config = loadRuntimeConfig(path);
@@ -100,16 +107,16 @@ function openLibrary(path: string) {
 				const path = "/material/" + encodeURIComponent(m.id);
 				const photo =
 					tab === "album" && m.media?.kind === "photo"
-						? `<img loading="lazy" alt="" src="/media/${encodeURIComponent(m.id)}">`
+						? `<img loading="lazy" alt="" src="/thumbnail/${encodeURIComponent(m.id)}">`
 						: "";
-				return `<article><a href="${path}">${photo}${escape(m.media?.original_name ?? m.text.slice(0, 64))}</a><br><small>${escape(m.received_at)}</small></article>`;
+				return `<article><a href="${path}">${photo}${escape(m.text.slice(0, 100))}</a><br><small>${m.media ? escape(m.media.original_name) + " · " : ""}${escape(m.received_at)}</small></article>`;
 			})
 			.join("");
 		const link = (n: number, label: string) =>
 			`<a href="/?tab=${tab}&amp;q=${encodeURIComponent(q)}&amp;page=${n}">${label}</a>`;
 		return layout(
 			tab,
-			`<h1>${names[tab]}</h1><form><input type="hidden" name="tab" value="${tab}"><input name="q" aria-label="搜索文字" placeholder="搜索文字" value="${escape(q)}"><button>搜索</button></form><div class="${tab === "album" ? "grid" : ""}">${cards || "<p>没有符合条件的记录</p>"}</div>${page ? link(page - 1, "上一页") : ""} ${rows.length > 30 ? link(page + 1, "下一页") : ""}`,
+			`<h1>${names[tab]}</h1><form><input type="hidden" name="tab" value="${tab}"><input name="q" aria-label="筛选当前列表" placeholder="筛选当前列表" value="${escape(q)}"><button>筛选</button></form><div class="${tab === "album" ? "grid" : ""}">${cards || "<p>没有符合条件的记录</p>"}</div>${page ? link(page - 1, "上一页") : ""} ${rows.length > 30 ? link(page + 1, "下一页") : ""}`,
 		);
 	}
 	function detail(id: string, episode: boolean, rev: string | null) {
@@ -155,12 +162,60 @@ function openLibrary(path: string) {
 		const corrections = db
 			.prepare("SELECT m.id" + materialFrom + " AND json_extract(m.body,'$.corrects')=?")
 			.all(...scope, id) as { id: string }[];
+		const related = db
+			.prepare(
+				"SELECT e.id,json_extract(e.body,'$.title') AS title" +
+					episodeFrom +
+					latest +
+					" AND EXISTS(SELECT 1 FROM episode_sources r WHERE r.episode=e.id AND r.revision=e.revision AND r.source=?) ORDER BY e.rowid DESC",
+			)
+			.all(...scope, id) as { id: string; title: string }[];
+		const backlinks = related
+			.map(
+				(e) =>
+					`<li><a href="/episode/${encodeURIComponent(e.id)}">${escape(e.title)}</a></li>`,
+			)
+			.join("");
 		return layout(
 			m.media ? "album" : "materials",
-			`<h1>${escape(m.media?.original_name ?? "原始材料")}</h1><small>${escape(m.speaker)} · ${escape(m.received_at)}</small>${media}<p>${escape(m.text)}</p><h2>记录范围</h2><p>${escape(m.coverage)}</p>${range ? `<p>报告的观看区间：${range[0] / 1000}–${range[1] / 1000} 秒</p>` : ""}${m.corrects ? `<a href="/material/${encodeURIComponent(m.corrects)}">查看被更正的原记录</a>` : ""}${corrections.map((x) => `<p><a href="/material/${encodeURIComponent(x.id)}">查看后续更正</a></p>`).join("")}`,
+			`<h1>${escape(m.media?.original_name ?? "原始材料")}</h1><small>${escape(m.speaker)} · ${escape(m.received_at)}</small>${media}<p>${escape(m.text)}</p><h2>记录范围</h2><p>${escape(m.coverage)}</p>${range ? `<p>报告的观看区间：${range[0] / 1000}–${range[1] / 1000} 秒</p>` : ""}<h2>关联经历</h2>${backlinks ? "<ul>" + backlinks + "</ul>" : "<p>暂无经历引用这条材料。</p>"}${m.corrects ? `<a href="/material/${encodeURIComponent(m.corrects)}">查看被更正的原记录</a>` : ""}${corrections.map((x) => `<p><a href="/material/${encodeURIComponent(x.id)}">查看后续更正</a></p>`).join("")}`,
 		);
 	}
-	return { listing, detail, material, config, close: () => db.close() };
+	async function search(query: string, lexical: boolean) {
+		const provider =
+			config.embedding && !lexical
+				? new CompatibleEmbeddingProvider(config.embedding)
+				: undefined;
+		const store = new MaterialStore(config.database, undefined, provider, "search");
+		try {
+			const result = await store.recallAsync(config, {
+				query,
+				limit: 20,
+				max_bytes: 65536,
+				mode: lexical ? "lexical" : "hybrid",
+			});
+			const rows = result.items as {
+				kind: "episode" | "material";
+				id: string;
+				excerpt?: string;
+				stale: boolean;
+			}[];
+			const cards = rows
+				.map((item) => {
+					const m = item.kind === "material" ? material(item.id) : undefined;
+					const label = item.kind === "episode" ? "经历" : m?.media ? "相册材料" : "材料";
+					return `<article><small>${label}${item.stale ? " · 有后续更正" : ""}</small><p><a href="/${item.kind}/${encodeURIComponent(item.id)}">${escape(item.excerpt ?? "展开记录")}</a></p></article>`;
+				})
+				.join("");
+			return layout(
+				"episodes",
+				`<h1>搜索结果</h1><p>${escape(query)} · ${result.diagnostics.semantic.used ? "混合检索" : "全文检索"}</p>${cards || "<p>没有匹配的记录。</p>"}`,
+			);
+		} finally {
+			store.close();
+		}
+	}
+	return { search, listing, detail, material, config, close: () => db.close() };
 }
 
 const suggested = dirname(resolve(runtime));
@@ -197,14 +252,15 @@ function picker(requested: string, error = "") {
 	}
 	return layout(
 		null,
-		`<h1>选择数据目录</h1><p>选择运行查看器的机器上包含 runtime.json 的文件夹。</p><form action="/choose"><input style="flex:1" name="dir" aria-label="目录路径" value="${escape(requested)}"><button>浏览</button></form>${error ? "<p role=alert>" + escape(error) + "</p>" : ""}${listing}`,
+		`<h1>打开记忆库</h1><form action="/select?current=1" method="post"><button>打开当前记忆库</button></form><details ${error || requested !== startingFolder ? "open" : ""}><summary>选择其他目录</summary><p>选择运行查看器的机器上包含 runtime.json 的文件夹。</p><form action="/choose"><input style="flex:1" name="dir" aria-label="目录路径" value="${escape(requested)}"><button>浏览</button></form>${error ? "<p role=alert>" + escape(error) + "</p>" : ""}${listing}</details>`,
 	);
 }
 type Session = { library?: ReturnType<typeof openLibrary> };
 const sessions = new Map<string, Session>();
 const secret = randomBytes(24).toString("hex");
 const cookie = "viewer_" + secret.slice(0, 8);
-const server = createServer((req, res) => {
+const thumbs = new Map<string, Buffer>();
+const server = createServer(async (req, res) => {
 	const fail = (code: number) => {
 		res.writeHead(code);
 		res.end();
@@ -220,6 +276,11 @@ const server = createServer((req, res) => {
 		if (!/^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(req.headers.host ?? "")) return fail(403);
 
 		const url = new URL(req.url ?? "/", "http://localhost");
+		if (req.method === "GET" && url.pathname === "/status/" + secret) {
+			res.writeHead(204);
+			res.end();
+			return;
+		}
 		const token = req.headers.cookie
 			?.split(/;\s*/)
 			.find((v) => v.startsWith(cookie + "="))
@@ -248,8 +309,11 @@ const server = createServer((req, res) => {
 			if (req.headers.origin !== "http://" + req.headers.host) return fail(403);
 			const dir = url.searchParams.get("dir") ?? "";
 			try {
-				const path = localDirectory(dir);
-				const library = openLibrary(join(path, "runtime.json"));
+				const path =
+					url.searchParams.get("current") === "1"
+						? resolve(runtime)
+						: join(localDirectory(dir), "runtime.json");
+				const library = openLibrary(path);
 				session.library?.close();
 				session.library = library;
 			} catch {
@@ -268,21 +332,52 @@ const server = createServer((req, res) => {
 			return;
 		}
 		if (!session.library) return fail(404);
-		const { material, listing, detail, config } = session.library;
+		const { search, material, listing, detail, config } = session.library;
 		let html: string | undefined;
-		if (url.pathname === "/") {
+		if (url.pathname === "/search") {
+			const q = url.searchParams.get("q")?.trim();
+			if (!q || Array.from(q).length > 512) return fail(400);
+			const selected = session.library;
+			html = await search(q, url.searchParams.get("mode") === "lexical");
+			if (session.library !== selected) return fail(409);
+		} else if (url.pathname === "/") {
 			const tab = url.searchParams.get("tab") ?? "episodes";
 			if (!Object.hasOwn(names, tab)) return fail(404);
 			html = listing(url, tab as Tab);
 		} else {
-			const match = /^\/(media|material|episode)\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+			const match = /^\/(thumbnail|media|material|episode)\/([a-zA-Z0-9_-]+)$/.exec(
+				url.pathname,
+			);
 			if (!match) return fail(404);
 			const id = match[2]!;
-			if (match[1] === "media") {
+			if (match[1] === "media" || match[1] === "thumbnail") {
 				const asset = material(id)?.media;
 				if (!asset || !/^[a-f0-9]{64}\.(jpg|png|webp|mp4)$/.test(asset.file))
 					return fail(404);
 				const path = join(config.database + ".media", asset.file);
+				if (match[1] === "thumbnail") {
+					if (asset.kind !== "photo") return fail(404);
+					const selected = session.library;
+					const thumbnail =
+						thumbs.get(path) ??
+						(await sharp(path)
+							.rotate()
+							.resize({
+								width: 480,
+								height: 320,
+								fit: "inside",
+								withoutEnlargement: true,
+							})
+							.webp({ quality: 75 })
+							.toBuffer());
+					if (session.library !== selected || material(id)?.media?.file !== asset.file)
+						return fail(404);
+					if (thumbs.size >= 64) thumbs.delete(thumbs.keys().next().value!);
+					thumbs.set(path, thumbnail);
+					res.setHeader("Content-Type", "image/webp");
+					res.end(thumbnail);
+					return;
+				}
 				const size = statSync(path).size;
 				let start = 0,
 					end = size - 1;
@@ -340,6 +435,11 @@ server.once("listening", () => {
 	const address = server.address();
 	if (!address || typeof address !== "object") return;
 	const url = `http://127.0.0.1:${address.port}/open/${secret}`;
+	try {
+		registerViewer(url, resolve(runtime));
+	} catch {
+		console.error("无法保存查看器地址，请保留下方登录链接。");
+	}
 	console.log(url);
 	if (args.includes("--open")) {
 		const command =

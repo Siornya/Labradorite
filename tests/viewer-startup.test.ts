@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { createInterface } from "node:readline";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
@@ -20,7 +20,7 @@ test("service starts a headless viewer by default and closes it with the MCP tra
 		}),
 	);
 	const child = spawn(process.execPath, [resolve("dist/src/mcp-main.js"), runtime], {
-		env: { ...process.env, SSH_CONNECTION: "test" },
+		env: { ...process.env, SSH_CONNECTION: "test", HOME: dir, USERPROFILE: dir },
 		windowsHide: true,
 	});
 	const closed = once(child, "close");
@@ -39,6 +39,11 @@ test("service starts a headless viewer by default and closes it with the MCP tra
 			}
 		}
 		assert.ok(url, "Expected a login link on stderr");
+		const cli = execFileSync(process.execPath, [resolve("dist/src/viewer-url.js")], {
+			encoding: "utf8",
+			env: { ...process.env, HOME: dir, USERPROFILE: dir },
+		});
+		assert.ok(cli.includes(url) && cli.includes("ssh -N -L"));
 		assert.equal((await fetch(url, { redirect: "manual" })).status, 303);
 		child.stdin.end();
 		await closed;

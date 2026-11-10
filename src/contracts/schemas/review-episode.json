@@ -1,7 +1,7 @@
 {
 	"$schema": "http://json-schema.org/draft-07/schema#",
-	"$id": "urn:fish-memory:organize-memory:v1",
-	"title": "OrganizeMemory",
+	"$id": "urn:fish-memory:review-episode:v1",
+	"title": "ReviewEpisode",
 	"type": "object",
 	"additionalProperties": false,
 	"required": [
@@ -17,6 +17,32 @@
 		"unknowns"
 	],
 	"properties": {
+		"person_review": {
+			"type": "object",
+			"additionalProperties": false,
+			"description": "Associate the saved episode revision with a person in the same transaction. Create with name and identity or update with id and expected_revision. Include a complete impression only when understanding changes.",
+			"properties": {
+				"name": { "type": "string", "pattern": "\\S", "maxLength": 128 },
+				"identity": { "type": "string", "pattern": "\\S", "maxLength": 512 },
+				"id": { "type": "string", "minLength": 1, "maxLength": 128 },
+				"expected_revision": { "type": "integer", "minimum": 1 },
+				"impression": { "type": "string", "pattern": "\\S", "maxLength": 2048 },
+				"other_episodes": {
+					"type": "array",
+					"maxItems": 31,
+					"uniqueItems": true,
+					"items": {
+						"type": "object",
+						"additionalProperties": false,
+						"required": ["id", "revision"],
+						"properties": {
+							"id": { "type": "string", "minLength": 1, "maxLength": 128 },
+							"revision": { "type": "integer", "minimum": 1 }
+						}
+					}
+				}
+			}
+		},
 		"operation_id": {
 			"type": "string",
 			"pattern": "^[A-Za-z0-9_-]{1,128}$"

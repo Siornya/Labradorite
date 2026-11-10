@@ -33,11 +33,16 @@ test("model submits and reads original material through stdio MCP", async () => 
 			"memory_submit",
 			"memory_recall",
 			"memory_read",
-			"memory_organize",
+			"memory_review",
+			"memory_preview_review",
 			"memory_delete",
 			"memory_index",
 		])
 			assert.ok(tools.has(name), `Missing MCP tool: ${name}`);
+		for (const name of ["memory_organize", "memory_preview_organize", "memory_review_person"]) {
+			assert.equal(tools.has(name), false);
+			assert.equal((await client.callTool({ name, arguments: {} })).isError, true);
+		}
 		assert.equal(
 			(await client.callTool({ name: "memory_status", arguments: {} })).isError,
 			false,
@@ -98,7 +103,7 @@ test("model submits and reads original material through stdio MCP", async () => 
 		);
 		assert.ok(recalled.items.length > 0);
 		const organized = await client.callTool({
-			name: "memory_organize",
+			name: "memory_review",
 			arguments: {
 				operation_id: "organize-mcp",
 				base_seq: recalled.snapshot_seq,
@@ -147,7 +152,7 @@ test("model submits and reads original material through stdio MCP", async () => 
 		assert.equal(
 			(
 				await client.callTool({
-					name: "memory_preview_organize",
+					name: "memory_preview_review",
 					arguments: {
 						...fields,
 						operation_id: "preview-mcp",

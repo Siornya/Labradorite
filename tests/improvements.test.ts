@@ -33,13 +33,114 @@ const entries = (store: MaterialStore, args: Record<string, unknown>) =>
 		correction_ids?: string[];
 	}[];
 
+test("person reviews cite dated episode revisions, survive link-only updates and follow source deletion", () => {
+	const clock = new ManualClock("2026-01-01T00:00:00Z");
+	const store = new MaterialStore(":memory:", clock);
+	try {
+		const first = store.submit("client", scope, material("draft")).material;
+		const create = {
+			...proposal(store, [first.id]),
+			person_review: { name: "小林", identity: "设计组", impression: "常先看草稿" },
+		};
+		const { episode, person } = store.reviewEpisode("client", scope, create);
+		assert.ok(person);
+		assert.deepEqual(store.reviewEpisode("client", scope, create).person, person);
+		clock.advanceBy(90 * 86400000);
+		const later = store.submit("client", scope, material("reason")).material;
+		const update = proposal(store, [later.id], "later");
+		const otherWorld = { ...scope, world: "other" };
+		assert.throws(() => store.person(otherWorld, person.id), { message: "NOT_FOUND" });
+		assert.throws(
+			() =>
+				store.reviewEpisode("client", scope, {
+					...update,
+					person_review: { id: person.id, expected_revision: 2 },
+				}),
+			{ message: "REVISION_CONFLICT" },
+		);
+		assert.equal(store.read(scope, later.id).organization_status, "pending");
+		const second = store.reviewEpisode("client", scope, {
+			...update,
+			person_review: { id: person.id, expected_revision: 1 },
+		}).episode;
+		assert.equal(store.person(scope, person.id).current_impression?.impression, "常先看草稿");
+		const review = {
+			operation_id: "reflect",
+			base_seq: second.commit_seq,
+			id: person.id,
+			expected_revision: 2,
+			episodes: [
+				{ id: episode.id, revision: 1 },
+				{ id: second.id, revision: 1 },
+			],
+			impression: "讨论复杂方案时倾向先看草稿",
+		};
+		assert.throws(
+			() =>
+				store.reviewPerson("client", scope, {
+					...review,
+					episodes: [{ id: second.id, revision: 99 }],
+				}),
+			{ message: "NOT_FOUND" },
+		);
+		store.reviewPerson("client", scope, review);
+		assert.equal(store.reviewPerson("client", scope, review).replayed, true);
+		const profile = store.person(scope, person.id);
+		assert.equal(profile.current_impression?.formed_at, "2026-04-01T00:00:00.000Z");
+		assert.deepEqual(
+			profile.current_impression?.episodes.map((e) => e.id).sort(),
+			[episode.id, second.id].sort(),
+		);
+		assert.equal(profile.history[0]?.impression, "常先看草稿");
+		store.reviewPerson("client", scope, {
+			operation_id: "namesake",
+			base_seq: store.sequence(scope),
+			name: "小林",
+			identity: "摄影社",
+			episodes: [{ id: episode.id, revision: 1 }],
+		});
+		assert.equal(store.people(scope, "小林").items.length, 2);
+		assert.deepEqual(
+			store.people(scope, "摄影社").items.map((p) => p.identity),
+			["摄影社"],
+		);
+		const preview = store.previewDelete(scope, { source_ids: [later.id] });
+		assert.deepEqual(
+			preview.person_reviews.map((r) => r.revision),
+			[2, 3],
+		);
+		store.delete("client", scope, {
+			operation_id: "erase-later",
+			source_ids: [later.id],
+			preview_token: preview.preview_token,
+		});
+		const remaining = store.person(scope, person.id);
+		assert.equal(remaining.current_impression, null);
+		assert.deepEqual(
+			remaining.history.map((r) => r.revision),
+			[1],
+		);
+		assert.throws(() => store.reviewPerson("client", scope, review), { message: "NOT_FOUND" });
+		const removeFirst = store.previewDelete(scope, { source_ids: [first.id] });
+		assert.equal(removeFirst.person_ids.length, 2);
+		store.delete("client", scope, {
+			operation_id: "erase-first",
+			source_ids: [first.id],
+			preview_token: removeFirst.preview_token,
+		});
+		assert.deepEqual(store.people(scope, "").items, []);
+	} finally {
+		store.close();
+	}
+});
+
 test("organization state follows current references, including gaps, revisions and deletion", () => {
 	const store = new MaterialStore(":memory:");
 	try {
 		const a = store.submit("client", scope, material("a")).material;
 		const b = store.submit("client", scope, material("b")).material;
 		const c = store.submit("client", scope, material("c")).material;
-		const first = store.organize("client", scope, proposal(store, [a.id, c.id])).episode;
+		const first = store.reviewEpisode("client", scope, proposal(store, [a.id, c.id])).episode;
 		assert.equal(store.read(scope, a.id).organization_status, "organized");
 		assert.equal(store.read(scope, b.id).organization_status, "pending");
 		assert.equal(store.status(scope).oldest_pending_seq, b.commit_seq);
@@ -48,7 +149,7 @@ test("organization state follows current references, including gaps, revisions a
 			entries(store, { query: "", organization_status: "pending" }).map((x) => x.id),
 			[b.id],
 		);
-		store.organize("client", scope, {
+		store.reviewEpisode("client", scope, {
 			...proposal(store, [c.id], "replace"),
 			id: first.id,
 			expected_revision: 1,
@@ -194,12 +295,12 @@ test("organization diff and incremental amendments preserve untouched content an
 		const p = proposal(store, [a.id]);
 		const seq = store.sequence(scope);
 		assert.equal(
-			store.previewOrganization(scope, p).changes.some((c) => c.field === "summary"),
+			store.previewEpisodeReview(scope, p).changes.some((c) => c.field === "summary"),
 			true,
 		);
 		assert.equal(store.sequence(scope), seq);
 		assert.equal(store.status(scope).counts.episodes, 0);
-		const ep = store.organize("client", scope, p).episode;
+		const ep = store.reviewEpisode("client", scope, p).episode;
 		const b = store.submit("client", scope, material("b")).material;
 		const amendment = {
 			operation_id: "amend",
@@ -234,7 +335,7 @@ test("organization diff and incremental amendments preserve untouched content an
 				}),
 			{ message: "REVISION_CONFLICT" },
 		);
-		const overlapping = store.previewOrganization(scope, proposal(store, [a.id], "another"));
+		const overlapping = store.previewEpisodeReview(scope, proposal(store, [a.id], "another"));
 		assert.deepEqual(overlapping.overlapping_episode_ids, [ep.id]);
 		assert.equal(overlapping.semantic_conflict_check, "not_performed");
 	} finally {
@@ -248,7 +349,11 @@ test("deletion preview includes transitive corrections and all revisions and rej
 		const a = store.submit("client", scope, material("a")).material;
 		const b = store.submit("client", scope, { ...material("b"), corrects: a.id }).material;
 		const c = store.submit("client", scope, { ...material("c"), corrects: b.id }).material;
-		const ep = store.organize("client", scope, proposal(store, [a.id, b.id, c.id])).episode;
+		const ep = store.reviewEpisode(
+			"client",
+			scope,
+			proposal(store, [a.id, b.id, c.id]),
+		).episode;
 		const seq = store.sequence(scope);
 		const preview = store.previewDelete(scope, { source_ids: [a.id] });
 		assert.deepEqual(new Set(preview.source_ids), new Set([a.id, b.id, c.id]));

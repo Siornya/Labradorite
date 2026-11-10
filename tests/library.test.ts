@@ -45,7 +45,7 @@ test("MCP album, Markdown export and restored instance retain the original media
 				source_kind: "activity_report",
 				speaker: "camera",
 				coverage: "收到图片",
-				text: "相册中的照片",
+				text: "相册中的照片来自摄影社的阿林，他说喜欢记录社团活动。",
 			},
 		};
 		const source = (await call("memory_import_media", args)).material;
@@ -60,20 +60,39 @@ test("MCP album, Markdown export and restored instance retain the original media
 			true,
 		);
 		const status = await call("memory_status", {});
-		const episode = (
-			await call("memory_organize", {
-				operation_id: "episode",
-				base_seq: status.snapshot_seq,
-				title: "照片",
-				summary: "收到照片",
-				source_ids: [source.id],
-				beats: [{ text: "收到照片", source_ids: [source.id] }],
-				interpretations: [],
-				thread: "相册",
-				activity_state: "active",
-				unknowns: [],
-			})
-		).episode;
+		const organized = await call("memory_review", {
+			operation_id: "episode",
+			base_seq: status.snapshot_seq,
+			title: "照片",
+			summary: "摄影社的阿林分享了他拍摄的活动照片，说他喜欢记录社团活动。",
+			source_ids: [source.id],
+			beats: [{ text: "收到照片", source_ids: [source.id] }],
+			interpretations: [],
+			thread: "相册",
+			activity_state: "active",
+			unknowns: [],
+			person_review: {
+				name: "阿林",
+				identity: "摄影社成员",
+			},
+		});
+		const { episode, person } = organized;
+		const people = await call("memory_people", { query: "摄影社" });
+		assert.deepEqual(
+			people.items.map((p: { id: string }) => p.id),
+			[person.id],
+		);
+		const reflection = {
+			operation_id: "reflect-on-photo",
+			base_seq: people.snapshot_seq,
+			id: person.id,
+			expected_revision: person.revision,
+			episodes: [{ id: episode.id, revision: episode.revision }],
+			impression: "他喜欢记录社团活动。",
+		};
+		const preview = await call("memory_preview_review", reflection);
+		assert.equal(preview.person_review.impression, reflection.impression);
+		await call("memory_review", reflection);
 		writeFileSync(
 			join(database + ".inbox", "clip.mp4"),
 			Buffer.from("000000186674797069736f6d0000000069736f6d6d703431", "hex"),
@@ -114,6 +133,13 @@ test("MCP album, Markdown export and restored instance retain the original media
 			});
 			assert.equal(select.status, 303);
 			const get = (path: string) => fetch(new URL(path, login), { headers: { cookie } });
+			const directory = await (await get("/?tab=people")).text();
+			assert.ok(directory.includes("/person/" + person.id));
+			const profile = await (await get("/person/" + person.id)).text();
+			assert.ok(
+				profile.includes("他喜欢记录社团活动。") &&
+					profile.includes("/episode/" + episode.id + "?rev=1"),
+			);
 			const album = await (await get("/?tab=album")).text();
 			assert.ok(album.includes("/thumbnail/" + source.id) && album.includes("相册中的照片"));
 			const preview = await get("/thumbnail/" + source.id);
@@ -152,6 +178,11 @@ test("MCP album, Markdown export and restored instance retain the original media
 		}
 		const exported = join(root, "export");
 		cli("markdown", runtime, exported);
+		assert.ok(
+			readFileSync(join(exported, "person-" + person.id + ".md"), "utf8").includes(
+				episode.id + "-v1.md",
+			),
+		);
 		assert.ok(readFileSync(join(exported, "Album.md"), "utf8").includes(source.media.file));
 		assert.ok(
 			readFileSync(join(exported, episode.id + "-v1.md"), "utf8").includes(source.id + ".md"),
@@ -163,6 +194,9 @@ test("MCP album, Markdown export and restored instance retain the original media
 		await client.close();
 		client = new Client({ name: "restored", version: "1" });
 		await connect(join(restored, "runtime.json"));
+		const restoredPerson = (await call("memory_read", { kind: "person", id: person.id }))
+			.profile;
+		assert.equal(restoredPerson.current_impression.episodes[0].id, episode.id);
 		assert.deepEqual(
 			(await call("memory_album", {})).items.map((item: { id: string }) => item.id),
 			[video.id, source.id],
@@ -176,4 +210,4 @@ test("MCP album, Markdown export and restored instance retain the original media
 		await client.close();
 		rmSync(root, { recursive: true, force: true });
 	}
-});
+}, 15000);

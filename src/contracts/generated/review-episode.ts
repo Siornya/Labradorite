@@ -1,6 +1,23 @@
 /* Generated from JSON Schema. Run vp run contracts:generate; do not edit. */
 
-export interface OrganizeMemory {
+export interface ReviewEpisode {
+	/**
+	 * Associate the saved episode revision with a person in the same transaction. Create with name and identity or update with id and expected_revision. Include a complete impression only when understanding changes.
+	 */
+	person_review?: {
+		name?: string;
+		identity?: string;
+		id?: string;
+		expected_revision?: number;
+		impression?: string;
+		/**
+		 * @maxItems 31
+		 */
+		other_episodes?: {
+			id: string;
+			revision: number;
+		}[];
+	};
 	operation_id: string;
 	base_seq: string;
 	id?: string;

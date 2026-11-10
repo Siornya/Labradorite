@@ -50,9 +50,9 @@ test("experience loop preserves original views, detects stale work, revises and 
 			source("b", "原来我理解偏了，先暂停在第二版主歌。"),
 		).material;
 		const initial = proposal(store, [a.id, b.id]);
-		const first = store.organize("client", scope, initial).episode;
+		const first = store.reviewEpisode("client", scope, initial).episode;
 		assert.equal(first.revision, 1);
-		assert.equal(store.organize("client", scope, initial).replayed, true);
+		assert.equal(store.reviewEpisode("client", scope, initial).replayed, true);
 		const stale = {
 			...proposal(store, [a.id, b.id], "stale"),
 			id: first.id,
@@ -62,7 +62,9 @@ test("experience loop preserves original views, detects stale work, revises and 
 			...source("c", "更正暂停位置：第三版主歌，尚未完成。"),
 			corrects: b.id,
 		}).material;
-		assert.throws(() => store.organize("client", scope, stale), { message: "STALE_BASIS" });
+		assert.throws(() => store.reviewEpisode("client", scope, stale), {
+			message: "STALE_BASIS",
+		});
 		const recalled = store.recall(scope, { query: "第二版主歌", max_bytes: 16000 });
 		assert.ok(JSON.stringify(recalled).includes(c.id));
 		assert.ok(JSON.stringify(recalled).includes('"stale":true'));
@@ -72,13 +74,13 @@ test("experience loop preserves original views, detects stale work, revises and 
 			expected_revision: 1,
 			summary: "暂停位置已更正为第三版主歌；仍未完成。",
 		};
-		const second = store.organize("client", scope, next).episode;
+		const second = store.reviewEpisode("client", scope, next).episode;
 		assert.equal(second.revision, 2);
 		assert.equal(store.history(scope, first.id)[0]!.summary, initial.summary);
 		assert.equal(store.read(scope, b.id).text, b.text);
 		assert.throws(
 			() =>
-				store.organize("client", scope, {
+				store.reviewEpisode("client", scope, {
 					...next,
 					operation_id: "old-revision",
 					base_seq: store.sequence(scope),
@@ -102,7 +104,7 @@ test("deletion blocks source reads, episode history, operation replay and new or
 		const input = source("a", "保密经历");
 		const material = store.submit("client", scope, input).material;
 		const organized = proposal(store, [material.id]);
-		const ep = store.organize("client", scope, organized).episode;
+		const ep = store.reviewEpisode("client", scope, organized).episode;
 		const correction = store.submit("client", scope, {
 			...source("correction", "保密经历的更正"),
 			corrects: material.id,
@@ -118,12 +120,14 @@ test("deletion blocks source reads, episode history, operation replay and new or
 		assert.throws(() => store.episode(scope, ep.id), { message: "NOT_FOUND" });
 		assert.throws(() => store.history(scope, ep.id), { message: "NOT_FOUND" });
 		assert.throws(() => store.submit("client", scope, input), { message: "NOT_FOUND" });
-		assert.throws(() => store.organize("client", scope, organized), { message: "NOT_FOUND" });
+		assert.throws(() => store.reviewEpisode("client", scope, organized), {
+			message: "NOT_FOUND",
+		});
 		assert.equal(store.recall(scope, { query: "" }).items.length, 0);
 		assert.throws(() => store.read(scope, correction.id), { message: "NOT_FOUND" });
 		assert.throws(
 			() =>
-				store.organize("client", scope, {
+				store.reviewEpisode("client", scope, {
 					...organized,
 					operation_id: "revive",
 					base_seq: store.sequence(scope),
@@ -142,14 +146,14 @@ test("scope, provenance and byte budget constrain organized recall", () => {
 			...source("a", "只读到第二章".repeat(2000)),
 			source_kind: "user_report",
 		}).material;
-		assert.throws(() => store.organize("client", scope, proposal(store, [material.id])), {
+		assert.throws(() => store.reviewEpisode("client", scope, proposal(store, [material.id])), {
 			message: "SOURCE_INVALID",
 		});
 		const inferred = {
 			...proposal(store, [material.id]),
 			interpretations: [{ text: "可能有误解", kind: "inferred", source_ids: [material.id] }],
 		};
-		const ep = store.organize("client", scope, inferred).episode;
+		const ep = store.reviewEpisode("client", scope, inferred).episode;
 		assert.equal(ep.semantic_status, "model_proposed");
 		assert.throws(() => store.episode({ ...scope, world: "fiction" }, ep.id), {
 			message: "NOT_FOUND",

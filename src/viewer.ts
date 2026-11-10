@@ -1,6 +1,7 @@
 import sharp from "sharp";
 import { registerViewer } from "./viewer-registry.js";
 import { MaterialStore } from "./storage/materials.js";
+import { findPeople, readPerson } from "./storage/profiles.js";
 import { CompatibleEmbeddingProvider } from "./providers/embedding.js";
 import { DatabaseSync } from "node:sqlite";
 import { spawn } from "node:child_process";
@@ -42,11 +43,11 @@ const escape = (value: string) =>
 		/[&<>"']/g,
 		(c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
 	);
-const names = { episodes: "经历", album: "相册", materials: "材料" };
+const names = { episodes: "经历", people: "人物档案", album: "相册", materials: "材料" };
 type Tab = keyof typeof names;
 function layout(tab: Tab | null, content: string) {
 	const searchForm = tab
-		? '<form action="/search"><input type="search" name="q" aria-label="搜索整个记忆库" maxlength="512" placeholder="搜索经历、材料和相册" required><select name="mode" aria-label="检索方式"><option value="hybrid">混合检索</option><option value="lexical">仅本地全文</option></select><button>全库搜索</button></form>'
+		? '<form action="/search"><input type="search" name="q" aria-label="搜索整个记忆库" maxlength="512" placeholder="搜索经历、人物、材料和相册" required><select name="mode" aria-label="检索方式"><option value="hybrid">混合检索</option><option value="lexical">仅本地全文</option></select><button>全库搜索</button></form>'
 		: "";
 	const tabs = Object.entries(names)
 		.map(
@@ -60,9 +61,9 @@ function layout(tab: Tab | null, content: string) {
 function openLibrary(path: string) {
 	const config = loadRuntimeConfig(path);
 	const db = new DatabaseSync(config.database, { readOnly: true });
+	const version = db.prepare("PRAGMA user_version").get()?.user_version;
 	try {
-		if (db.prepare("PRAGMA user_version").get()?.user_version !== 3)
-			throw new Error("Unsupported schema");
+		if (version !== 3 && version !== 4) throw new Error("Unsupported schema");
 		db.prepare("SELECT m.body" + materialFrom + " LIMIT 1");
 		db.prepare("SELECT e.body" + episodeFrom + " LIMIT 1");
 	} catch (error) {
@@ -78,6 +79,20 @@ function openLibrary(path: string) {
 	}
 	function listing(url: URL, tab: Tab) {
 		const q = (url.searchParams.get("q") ?? "").slice(0, 512);
+		if (tab === "people") {
+			const page =
+				version === 4
+					? findPeople(db, config, q, url.searchParams.get("after") ?? "")
+					: { items: [], next: null };
+			const cards = page.items.map(personCard).join("");
+			const next = page.next
+				? `<a href="/?tab=people&amp;q=${encodeURIComponent(q)}&amp;after=${encodeURIComponent(page.next)}">下一页</a>`
+				: "";
+			return layout(
+				tab,
+				`<h1>人物档案</h1><form><input type="hidden" name="tab" value="people"><input name="q" aria-label="姓名或身份线索" placeholder="姓名或身份线索" value="${escape(q)}"><button>筛选</button></form>${cards || "<p>没有符合条件的人物档案。</p>"}${next}`,
+			);
+		}
 		const page = Math.min(
 			Math.max(0, Number.parseInt(url.searchParams.get("page") ?? "0", 10) || 0),
 			1000000,
@@ -181,6 +196,34 @@ function openLibrary(path: string) {
 			`<h1>${escape(m.media?.original_name ?? "原始材料")}</h1><small>${escape(m.speaker)} · ${escape(m.received_at)}</small>${media}<p>${escape(m.text)}</p><h2>记录范围</h2><p>${escape(m.coverage)}</p>${range ? `<p>报告的观看区间：${range[0] / 1000}–${range[1] / 1000} 秒</p>` : ""}<h2>关联经历</h2>${backlinks ? "<ul>" + backlinks + "</ul>" : "<p>暂无经历引用这条材料。</p>"}${m.corrects ? `<a href="/material/${encodeURIComponent(m.corrects)}">查看被更正的原记录</a>` : ""}${corrections.map((x) => `<p><a href="/material/${encodeURIComponent(x.id)}">查看后续更正</a></p>`).join("")}`,
 		);
 	}
+	function personCard(person: { id: string; name: string; identity: string }) {
+		return `<article><h2><a href="/person/${encodeURIComponent(person.id)}">${escape(person.name)}</a></h2><p>${escape(person.identity)}</p></article>`;
+	}
+	function personDetail(id: string) {
+		const person = version === 4 ? readPerson(db, config, id) : undefined;
+		if (!person) return;
+		const history = person.history
+			.toReversed()
+			.map((review) => {
+				const evidence = review.episodes
+					.map((ref) => {
+						return `<li><a href="/episode/${encodeURIComponent(ref.id)}?rev=${ref.revision}">${escape(ref.title)} · 版本 ${ref.revision}</a></li>`;
+					})
+					.join("");
+				const label =
+					review.impression === null
+						? "关联经历"
+						: review.revision === person.current_impression?.revision
+							? "当前印象"
+							: "以往印象";
+				return `<section><h2>${label}</h2><small>${escape(review.formed_at)}</small>${review.impression ? "<p>" + escape(review.impression) + "</p>" : ""}<ul>${evidence}</ul></section>`;
+			})
+			.join("");
+		return layout(
+			"people",
+			`<h1>${escape(person.name)}</h1><p>${escape(person.identity)}</p>${history}`,
+		);
+	}
 	async function search(query: string, lexical: boolean) {
 		const provider =
 			config.embedding && !lexical
@@ -200,13 +243,18 @@ function openLibrary(path: string) {
 				excerpt?: string;
 				stale: boolean;
 			}[];
-			const cards = rows
-				.map((item) => {
-					const m = item.kind === "material" ? material(item.id) : undefined;
-					const label = item.kind === "episode" ? "经历" : m?.media ? "相册材料" : "材料";
-					return `<article><small>${label}${item.stale ? " · 有后续更正" : ""}</small><p><a href="/${item.kind}/${encodeURIComponent(item.id)}">${escape(item.excerpt ?? "展开记录")}</a></p></article>`;
-				})
-				.join("");
+			const people =
+				version === 4 ? findPeople(db, config, query).items.map(personCard).join("") : "";
+			const cards =
+				people +
+				rows
+					.map((item) => {
+						const m = item.kind === "material" ? material(item.id) : undefined;
+						const label =
+							item.kind === "episode" ? "经历" : m?.media ? "相册材料" : "材料";
+						return `<article><small>${label}${item.stale ? " · 有后续更正" : ""}</small><p><a href="/${item.kind}/${encodeURIComponent(item.id)}">${escape(item.excerpt ?? "展开记录")}</a></p></article>`;
+					})
+					.join("");
 			return layout(
 				"episodes",
 				`<h1>搜索结果</h1><p>${escape(query)} · ${result.diagnostics.semantic.used ? "混合检索" : "全文检索"}</p>${cards || "<p>没有匹配的记录。</p>"}`,
@@ -215,7 +263,7 @@ function openLibrary(path: string) {
 			store.close();
 		}
 	}
-	return { search, listing, detail, material, config, close: () => db.close() };
+	return { search, listing, detail, personDetail, material, config, close: () => db.close() };
 }
 
 const suggested = dirname(resolve(runtime));
@@ -345,7 +393,7 @@ const server = createServer(async (req, res) => {
 			if (!Object.hasOwn(names, tab)) return fail(404);
 			html = listing(url, tab as Tab);
 		} else {
-			const match = /^\/(thumbnail|media|material|episode)\/([a-zA-Z0-9_-]+)$/.exec(
+			const match = /^\/(thumbnail|media|material|episode|person)\/([a-zA-Z0-9_-]+)$/.exec(
 				url.pathname,
 			);
 			if (!match) return fail(404);
@@ -409,7 +457,10 @@ const server = createServer(async (req, res) => {
 				stream.pipe(res);
 				return;
 			}
-			html = detail(id, match[1] === "episode", url.searchParams.get("rev"));
+			html =
+				match[1] === "person"
+					? session.library.personDetail(id)
+					: detail(id, match[1] === "episode", url.searchParams.get("rev"));
 		}
 		if (!html) return fail(404);
 		res.setHeader("Content-Type", "text/html; charset=utf-8");

@@ -38,15 +38,20 @@ node dist/src/viewer-url.js
 
 ## 材料、经历与检索
 
-| 操作       | MCP 工具                                                     | 行为                                                                         |
-| ---------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------- |
-| 保存与展开 | `memory_submit`、`memory_read`                               | 保存原文、来源及覆盖范围，按 ID 展开。原始记录有误时可提交更正并关联旧材料。 |
-| 整理与修订 | `memory_preview_organize`、`memory_organize`、`memory_amend` | 把材料组织为有来源依据的经历，预览差异，保留历次修订。                       |
-| 查找记忆   | `memory_recall`、`memory_index`                              | 返回简短片段、命中原因和来源 ID，可按时间、渠道或生活线筛选。                |
-| 管理相册   | `memory_import_media`、`memory_album`                        | 从入口目录归档照片和受支持的 MP4，按当前空间与世界浏览。                     |
-| 检查与删除 | `memory_status`、`memory_preview_delete`、`memory_delete`    | 查看整理进度；删除前先查看受影响的材料、更正链和经历修订。                   |
+| 操作       | MCP 工具                                                  | 行为                                                                         |
+| ---------- | --------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| 保存与展开 | `memory_submit`、`memory_read`                            | 保存原文、来源及覆盖范围，按 ID 展开。原始记录有误时可提交更正并关联旧材料。 |
+| 整理与修订 | `memory_preview_review`、`memory_review`、`memory_amend`  | 把材料组织为有来源依据的经历，预览差异，保留历次修订。                       |
+| 人物档案   | `memory_people`、`memory_review`、`memory_read`           | 按姓名或身份线索查找人物，查看当前印象、形成时间和依据的经历版本。           |
+| 查找记忆   | `memory_recall`、`memory_index`                           | 返回简短片段、命中原因和来源 ID，可按时间、渠道或生活线筛选。                |
+| 管理相册   | `memory_import_media`、`memory_album`                     | 从入口目录归档照片和受支持的 MP4，按当前空间与世界浏览。                     |
+| 检查与删除 | `memory_status`、`memory_preview_delete`、`memory_delete` | 查看整理进度；删除前先查看受影响的材料、更正链和经历修订。                   |
 
 默认即可使用本地 SQLite 全文检索。有语义检索需求时，可在 `runtime.json` 中配置 OpenAI 兼容的 embedding 接口，再调用 `memory_index` 分批建立向量索引。建索引会把材料片段发送到所配置的服务，混合检索也可能发送查询文本；选择“仅本地全文”可在本机完成查询。配置示例和每日请求预算见[架构与配置说明](docs/architecture.md)。
+
+整理经历时，上层 AI 可以为经常出现或对角色有重要意义的人建档。先用 `memory_people` 检查姓名和身份线索。调用 `memory_review` 时，用 `source_ids` 引用原始材料，加上 `person_review` 即可在保存经历的同时建立或更新档案。只关联经历时省略 `impression`。如果新认识也依据更早的经历，在 `other_episodes` 中列出相应 ID 和版本。
+
+空闲回顾时，上层 AI 可以用同一个 `memory_review`，通过 `episodes` 引用已存经历的 ID 和版本，写下完整的当前印象。例如“讨论复杂方案时，小林倾向先看草稿”。两种用法均可将相同参数交给 `memory_preview_review` 预览。浏览器的“人物档案”和 `memory_read` 的 `kind: "person"` 都能查看历次判断，追溯到每次判断所依据的经历版本。更新服务首次打开 v2 或 v3 记忆库时会自动升级，保留已有材料和经历修订。
 
 ## 数据、导出与恢复
 

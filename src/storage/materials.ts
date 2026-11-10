@@ -1,4 +1,7 @@
 import type { MediaAsset } from "./media.js";
+import { findPeople, profileSchema, readPerson } from "./profiles.js";
+import reviewSchema from "../contracts/schemas/review-person.json" with { type: "json" };
+import type { ReviewPerson } from "../contracts/generated/review-person.js";
 import indexSchema from "../contracts/schemas/index-memory.json" with { type: "json" };
 import type { IndexMemory } from "../contracts/generated/index-memory.js";
 import { SearchIndex, searchText, type Hit } from "../retrieval/index.js";
@@ -8,10 +11,10 @@ import previewDeleteSchema from "../contracts/schemas/preview-delete.json" with 
 import amendSchema from "../contracts/schemas/amend-memory.json" with { type: "json" };
 import type { PreviewDelete } from "../contracts/generated/preview-delete.js";
 import type { AmendMemory } from "../contracts/generated/amend-memory.js";
-import organizeSchema from "../contracts/schemas/organize-memory.json" with { type: "json" };
+import reviewEpisodeSchema from "../contracts/schemas/review-episode.json" with { type: "json" };
 import recallSchema from "../contracts/schemas/recall-memory.json" with { type: "json" };
 import deleteSchema from "../contracts/schemas/delete-memory.json" with { type: "json" };
-import type { OrganizeMemory } from "../contracts/generated/organize-memory.js";
+import type { ReviewEpisode } from "../contracts/generated/review-episode.js";
 import type { RecallMemory } from "../contracts/generated/recall-memory.js";
 import type { DeleteMemory } from "../contracts/generated/delete-memory.js";
 import Database from "better-sqlite3";
@@ -22,15 +25,16 @@ import type { SubmitMaterial } from "../contracts/generated/submit-material.js";
 import { SystemClock, type Clock } from "../domain/clock.js";
 
 const validator = new Ajv({ strict: true });
+const validateReview = validator.compile<ReviewPerson>(reviewSchema);
 const validateIndex = validator.compile<IndexMemory>(indexSchema);
 const validatePreviewDelete = validator.compile<PreviewDelete>(previewDeleteSchema);
 const validateAmend = validator.compile<AmendMemory>(amendSchema);
-const validateOrganization = validator.compile<OrganizeMemory>(organizeSchema);
+const validateEpisodeReview = validator.compile<ReviewEpisode>(reviewEpisodeSchema);
 const validateRecall = validator.compile<RecallMemory>(recallSchema);
 const validateDelete = validator.compile<DeleteMemory>(deleteSchema);
 export interface Episode extends Omit<
-	OrganizeMemory,
-	"operation_id" | "base_seq" | "expected_revision" | "id"
+	ReviewEpisode,
+	"operation_id" | "base_seq" | "expected_revision" | "id" | "person_review"
 > {
 	id: string;
 	revision: number;
@@ -119,9 +123,9 @@ export class MaterialStore {
 		this.#search = new SearchIndex(this.#db, clock, provider);
 		try {
 			const version = this.#db.pragma("user_version", { simple: true });
-			if (access === "search" && version !== 3)
-				throw new Error("Search requires a v3 database.");
-			if (version !== 0 && version !== 2 && version !== 3)
+			if (access === "search" && version !== 3 && version !== 4)
+				throw new Error("Search requires a v3 or v4 database.");
+			if (version !== 0 && version !== 2 && version !== 3 && version !== 4)
 				throw new Error("Unsupported database schema.");
 			if (
 				version === 0 &&
@@ -154,7 +158,7 @@ export class MaterialStore {
 					})
 					.immediate();
 			}
-			if (version !== 3)
+			if (version === 0 || version === 2)
 				this.#db
 					.transaction(() => {
 						this.#search.initialize();
@@ -162,6 +166,14 @@ export class MaterialStore {
 					})
 					.immediate();
 			this.#search.verify();
+			if (access === "service" && version !== 4)
+				this.#db
+					.transaction(() => {
+						if (this.#db.pragma("user_version", { simple: true }) === 4) return;
+						this.#db.exec(profileSchema);
+						this.#db.pragma("user_version = 4");
+					})
+					.immediate();
 			this.#key = (
 				this.#db.prepare("SELECT value FROM metadata WHERE key='digest_key'").get() as {
 					value: string;
@@ -353,8 +365,8 @@ export class MaterialStore {
 			})
 			.immediate();
 	}
-	#checkProposal(scope: MemoryScope, input: unknown): asserts input is OrganizeMemory {
-		if (!validateOrganization(input) || Boolean(input.id) !== Boolean(input.expected_revision))
+	#checkProposal(scope: MemoryScope, input: unknown): asserts input is ReviewEpisode {
+		if (!validateEpisodeReview(input) || Boolean(input.id) !== Boolean(input.expected_revision))
 			throw new MaterialError("VALIDATION_ERROR");
 		if (this.sequence(scope) !== input.base_seq) throw new MaterialError("STALE_BASIS");
 		for (const id of input.source_ids) this.read(scope, id);
@@ -370,8 +382,19 @@ export class MaterialStore {
 			}
 		if (input.id && this.episode(scope, input.id).revision !== input.expected_revision)
 			throw new MaterialError("REVISION_CONFLICT");
+		if (input.person_review) {
+			const review = input.person_review;
+			this.#checkPerson(scope, review);
+			const others = review.other_episodes ?? [];
+			if (
+				new Set(others.map((ref) => ref.id)).size !== others.length ||
+				others.some((ref) => ref.id === input.id)
+			)
+				throw new MaterialError("VALIDATION_ERROR");
+			for (const ref of others) this.episode(scope, ref.id, ref.revision);
+		}
 	}
-	previewOrganization(scope: MemoryScope, input: unknown) {
+	previewEpisodeReview(scope: MemoryScope, input: unknown) {
 		this.#checkProposal(scope, input);
 		const old = input.id ? this.episode(scope, input.id) : undefined;
 		const keys = [
@@ -403,6 +426,7 @@ export class MaterialStore {
 			removed_source_ids:
 				old?.source_ids.filter((id) => !input.source_ids.includes(id)) ?? [],
 			overlapping_episode_ids: [...overlapping],
+			...(input.person_review ? { person_review: input.person_review } : {}),
 			semantic_conflict_check: "not_performed",
 			context_role: "historical_background",
 			semantic_status: "model_proposed",
@@ -435,12 +459,13 @@ export class MaterialStore {
 			activity_state: input.activity_state ?? old.activity_state,
 		};
 		return input.dry_run
-			? this.previewOrganization(scope, proposal)
-			: this.organize(principal, scope, proposal);
+			? this.previewEpisodeReview(scope, proposal)
+			: this.reviewEpisode(principal, scope, proposal);
 	}
-	organize(principal: string, scope: MemoryScope, input: unknown) {
-		if (!validateOrganization(input) || Boolean(input.id) !== Boolean(input.expected_revision))
+	reviewEpisode(principal: string, scope: MemoryScope, input: unknown) {
+		if (!validateEpisodeReview(input) || Boolean(input.id) !== Boolean(input.expected_revision))
 			throw new MaterialError("VALIDATION_ERROR");
+		// This persisted operation kind is part of the digest for existing retry receipts.
 		const operation = this.#operation(principal, scope, "organize", input, () => {
 			this.#checkProposal(scope, input);
 			const id = input.id ?? randomUUID();
@@ -455,6 +480,7 @@ export class MaterialStore {
 				operation_id: _op,
 				base_seq: _base,
 				expected_revision: _expected,
+				person_review,
 				...body
 			} = input;
 			const episode: Episode = {
@@ -473,10 +499,27 @@ export class MaterialStore {
 				this.#db
 					.prepare("INSERT INTO episode_sources VALUES (?,?,?)")
 					.run(id, revision, source);
-			return JSON.stringify({ id, revision });
+			const person = person_review
+				? this.#writeReview(scope, person_review, [
+						{ id, revision },
+						...(person_review.other_episodes ?? []),
+					])
+				: undefined;
+			return JSON.stringify({ id, revision, person });
 		});
-		const ref = JSON.parse(operation.result) as { id: string; revision: number };
-		return { episode: this.episode(scope, ref.id, ref.revision), replayed: operation.replayed };
+		const ref = JSON.parse(operation.result) as {
+			id: string;
+			revision: number;
+			person?: { id: string; revision: number };
+		};
+		const episode = this.episode(scope, ref.id, ref.revision);
+		if (ref.person && operation.replayed)
+			this.#personRevision(scope, ref.person.id, ref.person.revision);
+		return {
+			episode,
+			...(ref.person ? { person: ref.person } : {}),
+			replayed: operation.replayed,
+		};
 	}
 	episode(scope: MemoryScope, id: string, revision?: number): Episode {
 		this.sequence(scope);
@@ -502,6 +545,111 @@ export class MaterialStore {
 			)
 			.all(id, scope.space, scope.world) as { revision: number }[];
 		return rows.map((row) => this.episode(scope, id, row.revision));
+	}
+	people(scope: MemoryScope, query: string, after?: string) {
+		return this.#db.transaction(() => ({
+			snapshot_seq: this.sequence(scope),
+			...findPeople(this.#db, scope, query, after),
+		}))();
+	}
+	person(scope: MemoryScope, id: string) {
+		const profile = readPerson(this.#db, scope, id);
+		if (!profile) throw new MaterialError("NOT_FOUND");
+		return profile;
+	}
+	#personRevision(scope: MemoryScope, id: string, visibleRevision?: number) {
+		const base = `SELECT r.revision FROM person_reviews r JOIN people p ON p.id=r.person JOIN spaces s ON s.id=p.space
+			WHERE p.space=? AND p.world=? AND s.character=? AND r.person=?`;
+		const query =
+			visibleRevision === undefined
+				? base + " ORDER BY r.revision DESC LIMIT 1"
+				: base + " AND r.revision=? AND r.withdrawn IS NULL";
+		const row = this.#db
+			.prepare(query)
+			.get(
+				scope.space,
+				scope.world,
+				scope.character,
+				id,
+				...(visibleRevision === undefined ? [] : [visibleRevision]),
+			) as { revision: number } | undefined;
+		if (!row) throw new MaterialError("NOT_FOUND");
+		return row.revision;
+	}
+	#checkPerson(scope: MemoryScope, input: NonNullable<ReviewEpisode["person_review"]>) {
+		if (input.id) {
+			if (
+				input.expected_revision === undefined ||
+				input.name !== undefined ||
+				input.identity !== undefined
+			)
+				throw new MaterialError("VALIDATION_ERROR");
+			if (this.#personRevision(scope, input.id) !== input.expected_revision)
+				throw new MaterialError("REVISION_CONFLICT");
+		} else if (input.expected_revision !== undefined || !input.name || !input.identity) {
+			throw new MaterialError("VALIDATION_ERROR");
+		}
+	}
+	#writeReview(
+		scope: MemoryScope,
+		input: NonNullable<ReviewEpisode["person_review"]>,
+		episodes: readonly { id: string; revision: number }[],
+	) {
+		const id = input.id ?? randomUUID();
+		if (!input.id) {
+			this.#db
+				.prepare("INSERT INTO people(id,space,world,name,identity) VALUES(?,?,?,?,?)")
+				.run(id, scope.space, scope.world, input.name!, input.identity!);
+		}
+		const revision = (input.expected_revision ?? 0) + 1;
+		this.#db
+			.prepare(
+				"INSERT INTO person_reviews(person,revision,formed_at,impression) VALUES(?,?,?,?)",
+			)
+			.run(id, revision, this.clock.now().toISOString(), input.impression ?? null);
+		const link = this.#db.prepare(
+			"INSERT INTO person_evidence(person,review,episode,revision) VALUES(?,?,?,?)",
+		);
+		for (const ref of episodes) link.run(id, revision, ref.id, ref.revision);
+		return { id, revision };
+	}
+	#checkPersonReviewInput(input: unknown): asserts input is ReviewPerson {
+		if (
+			!validateReview(input) ||
+			new Set(input.episodes.map((e) => e.id)).size !== input.episodes.length
+		)
+			throw new MaterialError("VALIDATION_ERROR");
+	}
+	#checkPersonReviewBasis(scope: MemoryScope, input: ReviewPerson) {
+		if (this.sequence(scope) !== input.base_seq) throw new MaterialError("STALE_BASIS");
+		this.#checkPerson(scope, input);
+		for (const ref of input.episodes) this.episode(scope, ref.id, ref.revision);
+	}
+	previewPersonReview(scope: MemoryScope, input: unknown) {
+		this.#checkPersonReviewInput(input);
+		this.#checkPersonReviewBasis(scope, input);
+		return {
+			dry_run: true,
+			snapshot_seq: input.base_seq,
+			person_review: input,
+			semantic_status: "model_proposed",
+			context_role: "historical_background",
+		};
+	}
+	reviewPerson(principal: string, scope: MemoryScope, input: unknown) {
+		this.#checkPersonReviewInput(input);
+		const operation = this.#operation(principal, scope, "review_person", input, () => {
+			this.#checkPersonReviewBasis(scope, input);
+			const ref = this.#writeReview(scope, input, input.episodes);
+			return JSON.stringify({ ...ref, commit_seq: this.#next(scope) });
+		});
+		const ref = JSON.parse(operation.result) as {
+			id: string;
+			revision: number;
+			commit_seq: string;
+		};
+		if (operation.replayed) this.#personRevision(scope, ref.id, ref.revision);
+		return { ...ref, replayed: operation.replayed };
 	}
 	#organized(id: string): boolean {
 		return Boolean(
@@ -887,7 +1035,15 @@ export class MaterialStore {
 						).n,
 					);
 			}
+		const dependent = this.#db
+			.prepare(`SELECT DISTINCT person AS id,review AS revision
+			FROM person_evidence WHERE episode IN (SELECT value FROM json_each(?)) ORDER BY person, review`)
+			.all(JSON.stringify([...episodes.keys()])) as { id: string; revision: number }[];
+		// The first review also supports the stored name and distinguishing identity.
+		const people = new Set(dependent.filter((row) => row.revision === 1).map((row) => row.id));
 		return {
+			person_ids: [...people],
+			person_reviews: dependent.filter((row) => !people.has(row.id)),
 			source_ids,
 			episodes: [...episodes]
 				.sort(([a], [b]) => a.localeCompare(b))
@@ -916,6 +1072,8 @@ export class MaterialStore {
 			backup_cleanup: "not_supported",
 			counts: {
 				materials: impact.source_ids.length,
+				people: impact.person_ids.length,
+				individual_person_reviews: impact.person_reviews.length,
 				episodes: impact.episodes.length,
 				revisions: impact.episodes.reduce((n, e) => n + e.revisions, 0),
 			},
@@ -928,6 +1086,17 @@ export class MaterialStore {
 			if (preview.preview_token !== input.preview_token)
 				throw new MaterialError("STALE_PREVIEW");
 			const deleted = new Set(preview.source_ids);
+			for (const id of preview.person_ids)
+				this.#db.prepare("DELETE FROM people WHERE id=?").run(id);
+			for (const review of preview.person_reviews) {
+				this.#db
+					.prepare("DELETE FROM person_evidence WHERE person=? AND review=?")
+					.run(review.id, review.revision);
+				this.#db
+					.prepare(`UPDATE person_reviews SET withdrawn=CASE WHEN impression IS NULL THEN 'link' ELSE 'impression' END,
+					impression=NULL WHERE person=? AND revision=?`)
+					.run(review.id, review.revision);
+			}
 			for (const id of deleted) {
 				this.#db
 					.prepare("INSERT OR IGNORE INTO tombstones VALUES (?,?,?)")

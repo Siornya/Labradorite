@@ -240,11 +240,11 @@ test("late embedding responses cannot restore deleted sources or superseded epis
 	try {
 		const source = store.submit("client", scope, material("source", "原文")).material;
 		const removed = store.submit("client", scope, material("removed", "秘密")).material;
-		const first = store.organize("client", scope, episode(store, [source.id])).episode;
+		const first = store.reviewEpisode("client", scope, episode(store, [source.id])).episode;
 		const indexing = store.index(scope, {});
 		await assert.rejects(store.index(scope, {}), { message: "EMBEDDING_BUSY" });
 		erase(store, removed.id);
-		store.organize("client", scope, {
+		store.reviewEpisode("client", scope, {
 			...episode(store, [source.id], "新观点", "revise"),
 			id: first.id,
 			expected_revision: 1,
@@ -290,66 +290,71 @@ test("deletion while embedding a query is awaiting network is rechecked before r
 	}
 });
 
-test("v2 migration preserves authority and tombstones, backfills only live current revisions", () => {
-	const dir = mkdtempSync(join(tmpdir(), "rag-migrate-"));
-	const path = join(dir, "memory.db");
-	let store = new MaterialStore(path);
-	const live = store.submit("client", scope, material("live", "杭州脚踏出游")).material;
-	const gone = store.submit("client", scope, material("gone", "秘密")).material;
-	const first = store.organize("client", scope, episode(store, [live.id])).episode;
-	store.organize("client", scope, {
-		...episode(store, [live.id], "最新观点", "new"),
-		id: first.id,
-		expected_revision: 1,
-	});
-	erase(store, gone.id);
-	const seq = store.sequence(scope);
-	store.close();
-	const db = new Database(path);
-	const authority = () =>
-		[
-			"metadata",
-			"spaces",
-			"materials",
-			"operations",
-			"episodes",
-			"episode_sources",
-			"memory_operations",
-			"tombstones",
-		].map((table) =>
-			db
-				.prepare(
-					`SELECT * FROM ${table}${table === "metadata" ? " WHERE key!='search_version'" : ""} ORDER BY rowid`,
-				)
-				.all(),
-		);
-	try {
-		// Strip only derived structures: these authoritative tables are unchanged from v2.
-		db.exec(
-			"DROP TRIGGER search_chunk_deleted; DROP TABLE search_vectors; DROP TABLE search_chunks; DROP TABLE search_fts; DROP TABLE embedding_usage; DELETE FROM metadata WHERE key='search_version'; PRAGMA user_version=2;",
-		);
-		const before = authority();
-		store = new MaterialStore(path);
-		assert.equal(db.pragma("user_version", { simple: true }), 3);
-		assert.deepEqual(authority(), before);
-		assert.equal(store.sequence(scope), seq);
-		assert.deepEqual(store.read(scope, live.id).text, live.text);
-		assert.equal(
-			store.submit("client", scope, material("live", "杭州脚踏出游")).replayed,
-			true,
-		);
-		assert.throws(() => store.read(scope, gone.id), { message: "NOT_FOUND" });
-		assert.equal(store.status(scope).retrieval.chunks, 2);
-		assert.equal(store.history(scope, first.id).length, 2);
-		assert.deepEqual(ids(store.recall(scope, { query: "秘密" })), []);
-		assert.ok(ids(store.recall(scope, { query: "杭州" })).includes(live.id));
-		assert.equal(
-			(db.prepare("SELECT COUNT(*) AS n FROM search_vectors").get() as { n: number }).n,
-			0,
-		);
-	} finally {
+test.each([2, 3])(
+	"v%i migration preserves materials, episode history, tombstones and retrieval",
+	(version) => {
+		const dir = mkdtempSync(join(tmpdir(), "rag-migrate-"));
+		const path = join(dir, "memory.db");
+		let store = new MaterialStore(path);
+		const live = store.submit("client", scope, material("live", "杭州脚踏出游")).material;
+		const gone = store.submit("client", scope, material("gone", "秘密")).material;
+		const first = store.reviewEpisode("client", scope, episode(store, [live.id])).episode;
+		store.reviewEpisode("client", scope, {
+			...episode(store, [live.id], "最新观点", "new"),
+			id: first.id,
+			expected_revision: 1,
+		});
+		erase(store, gone.id);
+		const seq = store.sequence(scope);
 		store.close();
-		db.close();
-		rmSync(dir, { recursive: true, force: true });
-	}
-});
+		const db = new Database(path);
+		const authority = () =>
+			[
+				"metadata",
+				"spaces",
+				"materials",
+				"operations",
+				"episodes",
+				"episode_sources",
+				"memory_operations",
+				"tombstones",
+			].map((table) =>
+				db
+					.prepare(
+						`SELECT * FROM ${table}${table === "metadata" ? " WHERE key!='search_version'" : ""} ORDER BY rowid`,
+					)
+					.all(),
+			);
+		try {
+			db.exec("DROP TABLE person_evidence; DROP TABLE person_reviews; DROP TABLE people;");
+			if (version === 2)
+				db.exec(
+					"DROP TRIGGER search_chunk_deleted; DROP TABLE search_vectors; DROP TABLE search_chunks; DROP TABLE search_fts; DROP TABLE embedding_usage; DELETE FROM metadata WHERE key='search_version';",
+				);
+			db.pragma("user_version = " + version);
+			const before = authority();
+			store = new MaterialStore(path);
+			assert.equal(db.pragma("user_version", { simple: true }), 4);
+			assert.deepEqual(authority(), before);
+			assert.equal(store.sequence(scope), seq);
+			assert.deepEqual(store.read(scope, live.id).text, live.text);
+			assert.equal(
+				store.submit("client", scope, material("live", "杭州脚踏出游")).replayed,
+				true,
+			);
+			assert.throws(() => store.read(scope, gone.id), { message: "NOT_FOUND" });
+			assert.equal(store.status(scope).retrieval.chunks, 2);
+			assert.equal(store.history(scope, first.id).length, 2);
+			assert.deepEqual(ids(store.recall(scope, { query: "秘密" })), []);
+			assert.ok(ids(store.recall(scope, { query: "杭州" })).includes(live.id));
+			assert.equal(
+				(db.prepare("SELECT COUNT(*) AS n FROM search_vectors").get() as { n: number }).n,
+				0,
+			);
+		} finally {
+			store.close();
+			db.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	},
+);

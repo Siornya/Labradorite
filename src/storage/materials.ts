@@ -78,7 +78,7 @@ export interface Material {
 	speaker: string;
 	coverage: string;
 	authored_at: string | null;
-	organization_status: "pending" | "organized";
+	review_status: "pending" | "reviewed";
 	channel?: string;
 	conversation_id?: string;
 	thread?: string;
@@ -174,6 +174,19 @@ export class MaterialStore {
 						this.#db.pragma("user_version = 4");
 					})
 					.immediate();
+			if (
+				access === "service" &&
+				!this.#db.prepare("SELECT 1 FROM metadata WHERE key='review_status_format'").get()
+			) {
+				this.#db
+					.transaction(() => {
+						this.#db
+							.exec(`UPDATE materials SET body=json_set(json_remove(body,'$.organization_status'),'$.review_status','pending')
+						WHERE json_type(body,'$.organization_status') IS NOT NULL;
+						INSERT OR IGNORE INTO metadata VALUES ('review_status_format','1');`);
+					})
+					.immediate();
+			}
 			this.#key = (
 				this.#db.prepare("SELECT value FROM metadata WHERE key='digest_key'").get() as {
 					value: string;
@@ -252,7 +265,7 @@ export class MaterialStore {
 					speaker: input.speaker,
 					coverage: input.coverage,
 					authored_at: normalized.authored_at,
-					organization_status: "pending",
+					review_status: "pending",
 					...(input.corrects ? { corrects: input.corrects } : {}),
 					...(input.channel ? { channel: input.channel } : {}),
 					...(input.conversation_id ? { conversation_id: input.conversation_id } : {}),
@@ -306,10 +319,12 @@ export class MaterialStore {
 			)
 			.get(id, scope.space, scope.world, scope.character) as { body: string } | undefined;
 		if (!row) throw new MaterialError("NOT_FOUND");
-		const material = JSON.parse(row.body) as Material;
+		const material = JSON.parse(row.body) as Material & { organization_status?: string };
+		// Read-only connections can open libraries before the service migrates them.
+		delete material.organization_status;
 		return {
 			...material,
-			organization_status: this.#organized(id) ? "organized" : "pending",
+			review_status: this.#reviewed(id) ? "reviewed" : "pending",
 			context_role: "historical_background",
 			correction_ids: this.#children(scope, id),
 		};
@@ -651,7 +666,7 @@ export class MaterialStore {
 		if (operation.replayed) this.#personRevision(scope, ref.id, ref.revision);
 		return { ...ref, replayed: operation.replayed };
 	}
-	#organized(id: string): boolean {
+	#reviewed(id: string): boolean {
 		return Boolean(
 			this.#db
 				.prepare(
@@ -703,13 +718,13 @@ export class MaterialStore {
 			)
 			.iterate(scope.space, scope.world) as Iterable<{ id: string; body: string }>;
 		let total = 0,
-			organized = 0,
+			reviewed = 0,
 			oldestPending: string | null = null;
 		const recent: { id: string; commit_seq: string; received_at: string }[] = [];
 		for (const row of materials) {
 			const m = JSON.parse(row.body) as Material;
 			total++;
-			if (this.#organized(row.id)) organized++;
+			if (this.#reviewed(row.id)) reviewed++;
 			else oldestPending = m.commit_seq;
 			if (recent.length < 5)
 				recent.push({ id: row.id, commit_seq: m.commit_seq, received_at: m.received_at });
@@ -725,23 +740,23 @@ export class MaterialStore {
 		};
 		return {
 			materials: true,
-			organization: "external_model_proposals",
+			review: "external_model_proposals",
 			deletion: "preview_required",
 			recall: "fts5_optional_semantic_rrf",
 			retrieval: this.#search.status(scope),
 			snapshot_seq,
 			counts: {
 				materials: total,
-				pending: total - organized,
-				organized,
+				pending: total - reviewed,
+				reviewed,
 				episodes: episodes.total,
 				episode_revisions: episodes.revisions,
 			},
 			oldest_pending_seq: oldestPending,
-			latest_organization_seq: episodes.latest === null ? null : String(episodes.latest),
-			organization_complete: total === organized,
+			latest_review_seq: episodes.latest === null ? null : String(episodes.latest),
+			review_complete: total === reviewed,
 			recent_materials: recent,
-			state_meaning: "organized means referenced by a current episode, not verified as true",
+			state_meaning: "reviewed means referenced by a current episode, not verified as true",
 		};
 	}
 	#validateRecall(input: unknown): asserts input is RecallMemory {
@@ -750,7 +765,7 @@ export class MaterialStore {
 			if (time && !validTimestamp(time)) throw new MaterialError("VALIDATION_ERROR");
 		if (input.from && input.to && Date.parse(input.from) > Date.parse(input.to))
 			throw new MaterialError("VALIDATION_ERROR");
-		if (input.kind === "episode" && input.organization_status)
+		if (input.kind === "episode" && input.review_status)
 			throw new MaterialError("VALIDATION_ERROR");
 		if (input.before_seq && input.query.trim()) throw new MaterialError("VALIDATION_ERROR");
 	}
@@ -812,10 +827,9 @@ export class MaterialStore {
 				m = value as Material,
 				ep = value as Episode;
 			if (
-				input.organization_status &&
+				input.review_status &&
 				(!isMaterial ||
-					(this.#organized(value.id) ? "organized" : "pending") !==
-						input.organization_status)
+					(this.#reviewed(value.id) ? "reviewed" : "pending") !== input.review_status)
 			)
 				return;
 			if (input.thread && value.thread !== input.thread) return;
@@ -898,7 +912,7 @@ export class MaterialStore {
 					)
 					.iterate(scope.space, scope.world) as Iterable<{ body: string }>)
 					consider("material", JSON.parse(row.body));
-			if (input.kind !== "material" && !input.organization_status)
+			if (input.kind !== "material" && !input.review_status)
 				for (const row of this.#db
 					.prepare(
 						"SELECT body FROM episodes e WHERE space=? AND world=? AND revision=(SELECT MAX(x.revision) FROM episodes x WHERE x.id=e.id)",
@@ -985,10 +999,10 @@ export class MaterialStore {
 				excerpt_start: start,
 				excerpt_end: start + Array.from(excerpt).length,
 				matched_terms: item.terms.slice(0, 8),
-				organization_status:
+				review_status:
 					item.kind === "material"
-						? this.#organized(item.id)
-							? "organized"
+						? this.#reviewed(item.id)
+							? "reviewed"
 							: "pending"
 						: undefined,
 				source_ids: sources,

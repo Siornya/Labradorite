@@ -90,7 +90,7 @@ test("MCP album, Markdown export and restored instance retain the original media
 			episodes: [{ id: episode.id, revision: episode.revision }],
 			impression: "他喜欢记录社团活动。",
 		};
-		const preview = await call("memory_preview_review", reflection);
+		const preview = await call("memory_review", { ...reflection, dry_run: true });
 		assert.equal(preview.person_review.impression, reflection.impression);
 		await call("memory_review", reflection);
 		writeFileSync(

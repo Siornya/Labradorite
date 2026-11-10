@@ -46,7 +46,7 @@ test("material persists unchanged across reopen with stable idempotent receipt",
 	let store = new MaterialStore(path);
 	try {
 		const first = store.submit("client", scope, input);
-		assert.equal(first.material.organization_status, "pending");
+		assert.equal(first.material.review_status, "pending");
 		assert.equal(first.material.authored_at, null);
 		assert.equal(first.material.text, input.text);
 		store.close();

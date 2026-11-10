@@ -5,7 +5,7 @@ export interface RecallMemory {
 	limit?: number;
 	max_bytes?: number;
 	kind?: "material" | "episode";
-	organization_status?: "pending" | "organized";
+	review_status?: "pending" | "reviewed";
 	time_basis?: "received_at" | "authored_at";
 	from?: string;
 	to?: string;

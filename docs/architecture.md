@@ -48,15 +48,15 @@ Node.js >=24，由 vp 按 engines.node 选择运行时，构建目标为 Node.js
 
 MCP 使用异步 recallAsync，在事务外请求查询向量，返回后重新查询当前索引并通过权威记录检查可见性，最终输出基于新的 snapshot_seq。内部同步 recall 只使用词法通道，标明 SYNC_LEXICAL_ONLY。新材料的 FTS 立即可用，向量未完成时仍保留词法路径。FTS 按匹配候选读取正文；向量当前逐片扫描 O(片段数×维度)，候选排名保留 ID 与轻量元数据，最终才保留所选正文；广泛命中时仍会使用较多 CPU 与候选列表内存，不宣称大规模或高并发性能。
 
-支持 kind、organization_status、channel、thread 与时间窗过滤。channel 只匹配材料报告渠道；thread 精确匹配材料或经历标签；这些都不是访问权限。时间窗可选择 received_at 或 authored_at（包含边界）；经历在 received_at 模式使用 recorded_at，authored_at 窗口不猜测经历发生时间。未知撰写时间不补填接收时间。
+支持 kind、review_status、channel、thread 与时间窗过滤。channel 只匹配材料报告渠道；thread 精确匹配材料或经历标签；这些都不是访问权限。时间窗可选择 received_at 或 authored_at（包含边界）；经历在 received_at 模式使用 recorded_at，authored_at 窗口不猜测经历发生时间。未知撰写时间不补填接收时间。
 
 recall 默认返回原文短片段或明确标记的模型经历片段、命中线索、来源和更正引用，统一标为 historical_background。更正提示检查整个后续链。max_bytes 对完整 recall JSON 作硬预算，必要时退化为 ID 目录；显式 read 展开不受该预算限制。片段附 code point 起止位置：material.text 或上述 episode_search_text；经历片段不冒充原文。诊断返回候选读取（scanned）、过滤后、匹配和返回计数，以及语义实际使用与降级原因、未完成片段数；不持久化查询日志，不宣称知道模型是否使用结果。
 
 memory_status.retrieval 返回当前片段数、当前模型空间已嵌入/待嵌入片段、索引版本、UTC 当日请求次数和已知 token 用量。
 
-memory_status 返回当前材料/经历/修订数、pending/organized 数量、最早未整理序号、最近整理序号及最近材料。organized 按最新经历版本的引用计算，来源在新版被撤下或依赖经历删除后可回到 pending，不代表真实性确认。旧 body 中的静态状态仅为历史字段，读出时重新计算。提交返回受作用域约束的最多 10 条精确文本重复提示，不自动合并事件。
+memory_status 返回当前材料/经历/修订数、pending/reviewed 数量、最早未整理序号、最近整理序号及最近材料。reviewed 按最新经历版本的引用计算，来源在新版被撤下或依赖经历删除后可回到 pending，不代表真实性确认。旧 body 中的静态状态仅为历史字段，读出时重新计算。提交返回受作用域约束的最多 10 条精确文本重复提示，不自动合并事件。
 
-memory_preview_review 在不写入时展示字段差异、撤下来源和共享证据的其他经历；共享证据不等于语义矛盾。memory_amend 允许追加来源、过程、解释、未知项，以及替换标题、摘要、生活线和活动状态。基于指定旧修订重建完整提案，复用原子写入和幂等校验；dry_run 返回预览。既有条目的移除/重排仍通过完整提案进行。
+memory_review 设置 dry_run 为 true 时只预览，展示字段差异、撤下来源和共享证据的其他经历；共享证据不等于语义矛盾。memory_amend 允许追加来源、过程、解释、未知项，以及替换标题、摘要、生活线和活动状态。基于指定旧修订重建完整提案，复用原子写入和幂等校验；dry_run 返回预览。既有条目的移除/重排仍通过完整提案进行。
 
 memory_preview_delete 返回更正闭包、受影响经历和修订数，并对作用域、请求、影响面及序号签发 HMAC preview_token。memory_delete 必须携带该 token，在写事务内重算；空间中任意新写入都会使预览失效。预览令牌不是用户授权证明，上层仍须获得明确删除指令。删除来源会级联更正后续链及依赖经历的全部版本，清空正文，保留最小 tombstone/操作元数据，重放不能恢复。删除在同一事务移除相关全文片段与所有模型空间的向量；经历修订撤下旧版本索引。异步向量写回只接受仍存在的精确片段 key，不能复活删除内容或旧修订。在线删除不等于介质擦除或服务外副本删除，未提供备份恢复入口。
 

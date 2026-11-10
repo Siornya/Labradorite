@@ -12,11 +12,23 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import submitSchema from "../contracts/schemas/submit-material.json" with { type: "json" };
 import { MaterialError, type MaterialStore, type MemoryScope } from "../storage/materials.js";
 
+const dryRun = {
+	type: "boolean",
+	default: false,
+	description: "Preview the proposal without writing.",
+};
 const reviewSchema = {
 	type: "object" as const,
-	properties: { ...reviewEpisodeSchema.properties, ...reviewPersonSchema.properties },
+	properties: {
+		...reviewEpisodeSchema.properties,
+		...reviewPersonSchema.properties,
+		dry_run: dryRun,
+	},
 	required: ["operation_id", "base_seq"],
-	oneOf: [reviewEpisodeSchema, reviewPersonSchema],
+	oneOf: [reviewEpisodeSchema, reviewPersonSchema].map((schema) => ({
+		...schema,
+		properties: { ...schema.properties, dry_run: dryRun },
+	})),
 };
 
 export function createMemoryServer(memory: {
@@ -90,13 +102,6 @@ export function createMemoryServer(memory: {
 				annotations: { readOnlyHint: true },
 			},
 			{
-				name: "memory_preview_review",
-				description:
-					"Preview the same proposal accepted by memory_review. For an episode, inspect changed fields, removed sources and overlapping evidence. For a person, validate the target profile and evidence revisions and inspect the proposed review.",
-				inputSchema: reviewSchema,
-				annotations: { readOnlyHint: true },
-			},
-			{
 				name: "memory_amend",
 				description:
 					"Append sources, beats, interpretations or unknowns and optionally replace title, summary, thread or activity state without resending untouched fields. Requires base_seq and expected_revision. Set dry_run true for a field diff. Previous revisions remain available. To retract existing elements use a full proposal and preview its diff.",
@@ -111,7 +116,7 @@ export function createMemoryServer(memory: {
 			{
 				name: "memory_review",
 				description:
-					"Review memory using one proposal. With source_ids, save or revise an episode grounded in readable materials. Expressed interpretations require character statements. Include person_review to link a significant person and optionally update their impression atomically. With episodes instead, cite existing episode IDs and revisions to review a person directly. Find candidates with memory_people; create with name and identity or update with id and expected_revision. Omit impression to only link evidence, or supply the complete new judgment. Use snapshot_seq as base_seq and a stable operation_id; reread on conflict.",
+					"Review memory using one proposal. Set dry_run=true to preview without writing; omit it or set false to save directly. With source_ids, save or revise an episode grounded in readable materials. Expressed interpretations require character statements. Include person_review to link a significant person and optionally update their impression atomically. With episodes instead, cite existing episode IDs and revisions to review a person directly. Find candidates with memory_people; create with name and identity or update with id and expected_revision. Omit impression to only link evidence, or supply the complete new judgment. Use snapshot_seq as base_seq and a stable operation_id; reread on conflict.",
 				inputSchema: reviewSchema,
 			},
 			{
@@ -125,7 +130,7 @@ export function createMemoryServer(memory: {
 			{
 				name: "memory_status",
 				description:
-					"Check capabilities, actual current material/episode counts, pending coverage gaps and recent writes. Organized means referenced by a current episode, not verified true. latest_organization_seq does not imply all prior sources were organized.",
+					"Check capabilities, actual current material/episode counts, pending coverage gaps and recent writes. Reviewed means referenced by a current episode, not verified true. latest_review_seq does not imply all prior sources were reviewed.",
 				inputSchema: {
 					type: "object" as const,
 					properties: {},
@@ -203,22 +208,27 @@ export function createMemoryServer(memory: {
 				case "memory_preview_delete":
 					result = memory.store.previewDelete(memory.scope, args);
 					break;
-				case "memory_preview_review":
-					result = Object.hasOwn(args, "episodes")
-						? memory.store.previewPersonReview(memory.scope, args)
-						: memory.store.previewEpisodeReview(memory.scope, args);
-					break;
 				case "memory_amend":
 					result = memory.store.amend(memory.principal, memory.scope, args);
 					break;
 				case "memory_submit":
 					result = memory.store.submit(memory.principal, memory.scope, args);
 					break;
-				case "memory_review":
-					result = Object.hasOwn(args, "episodes")
-						? memory.store.reviewPerson(memory.principal, memory.scope, args)
-						: memory.store.reviewEpisode(memory.principal, memory.scope, args);
+				case "memory_review": {
+					const { dry_run = false, ...proposal } = args;
+					if (typeof dry_run !== "boolean") throw new MaterialError("VALIDATION_ERROR");
+					const person = Object.hasOwn(proposal, "episodes");
+					if (dry_run) {
+						result = person
+							? memory.store.previewPersonReview(memory.scope, proposal)
+							: memory.store.previewEpisodeReview(memory.scope, proposal);
+					} else {
+						result = person
+							? memory.store.reviewPerson(memory.principal, memory.scope, proposal)
+							: memory.store.reviewEpisode(memory.principal, memory.scope, proposal);
+					}
 					break;
+				}
 				case "memory_recall":
 					result = await memory.store.recallAsync(memory.scope, args);
 					break;

@@ -58,7 +58,7 @@ test("person reviews cite dated episode revisions, survive link-only updates and
 				}),
 			{ message: "REVISION_CONFLICT" },
 		);
-		assert.equal(store.read(scope, later.id).organization_status, "pending");
+		assert.equal(store.read(scope, later.id).review_status, "pending");
 		const second = store.reviewEpisode("client", scope, {
 			...update,
 			person_review: { id: person.id, expected_revision: 1 },
@@ -141,12 +141,12 @@ test("organization state follows current references, including gaps, revisions a
 		const b = store.submit("client", scope, material("b")).material;
 		const c = store.submit("client", scope, material("c")).material;
 		const first = store.reviewEpisode("client", scope, proposal(store, [a.id, c.id])).episode;
-		assert.equal(store.read(scope, a.id).organization_status, "organized");
-		assert.equal(store.read(scope, b.id).organization_status, "pending");
+		assert.equal(store.read(scope, a.id).review_status, "reviewed");
+		assert.equal(store.read(scope, b.id).review_status, "pending");
 		assert.equal(store.status(scope).oldest_pending_seq, b.commit_seq);
-		assert.equal(store.status(scope).organization_complete, false);
+		assert.equal(store.status(scope).review_complete, false);
 		assert.deepEqual(
-			entries(store, { query: "", organization_status: "pending" }).map((x) => x.id),
+			entries(store, { query: "", review_status: "pending" }).map((x) => x.id),
 			[b.id],
 		);
 		store.reviewEpisode("client", scope, {
@@ -154,7 +154,7 @@ test("organization state follows current references, including gaps, revisions a
 			id: first.id,
 			expected_revision: 1,
 		});
-		assert.equal(store.read(scope, a.id).organization_status, "pending");
+		assert.equal(store.read(scope, a.id).review_status, "pending");
 		assert.equal(store.status(scope).counts.episode_revisions, 2);
 		const preview = store.previewDelete(scope, { source_ids: [a.id] });
 		assert.equal(preview.counts.revisions, 2); // An old revision still depends on a.
@@ -165,7 +165,7 @@ test("organization state follows current references, including gaps, revisions a
 		});
 		assert.equal(store.status(scope).counts.episodes, 0);
 		assert.equal(store.status(scope).counts.pending, 2);
-		assert.equal(store.read(scope, c.id).organization_status, "pending");
+		assert.equal(store.read(scope, c.id).review_status, "pending");
 	} finally {
 		store.close();
 	}

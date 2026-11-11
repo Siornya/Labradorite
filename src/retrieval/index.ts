@@ -51,7 +51,7 @@ export class SearchIndex {
 			? createHash("sha256")
 					.update(
 						JSON.stringify([
-							provider.config.endpoint,
+							provider.spaceKey ?? provider.config.endpoint,
 							provider.config.model,
 							provider.config.dimensions,
 							provider.config.api_key_env ?? null,

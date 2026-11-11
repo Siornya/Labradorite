@@ -1,6 +1,6 @@
 {
 	"$schema": "http://json-schema.org/draft-07/schema#",
-	"$id": "urn:fish-memory:delete-memory:v2",
+	"$id": "urn:labradorite:delete-memory:v2",
 	"title": "DeleteMemory",
 	"type": "object",
 	"additionalProperties": false,

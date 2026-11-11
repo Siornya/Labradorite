@@ -5,6 +5,7 @@ import { isAbsolute } from "node:path";
 export interface RuntimeConfig {
 	database: string;
 	embedding?: EmbeddingConfig;
+	local_model?: { file: string; sha256: string };
 	space: string;
 	character: string;
 	world: string;
@@ -19,7 +20,10 @@ export function loadRuntimeConfig(path: string): RuntimeConfig {
 	}
 	if (
 		Object.keys(config).some(
-			(key) => !["database", "space", "character", "world", "embedding"].includes(key),
+			(key) =>
+				!["database", "space", "character", "world", "embedding", "local_model"].includes(
+					key,
+				),
 		)
 	)
 		throw new Error(
@@ -32,5 +36,21 @@ export function loadRuntimeConfig(path: string): RuntimeConfig {
 	}
 	if (config.embedding !== undefined)
 		config.embedding = validateEmbeddingConfig(config.embedding);
+	if (config.local_model !== undefined) {
+		const model = config.local_model as RuntimeConfig["local_model"];
+		const embedding = config.embedding as EmbeddingConfig | undefined;
+		if (
+			!model ||
+			typeof model.file !== "string" ||
+			!isAbsolute(model.file) ||
+			typeof model.sha256 !== "string" ||
+			!/^[a-f0-9]{64}$/.test(model.sha256) ||
+			embedding?.model !== "gguf-" + model.sha256 ||
+			!/^http:\/\/127\.0\.0\.1:[1-9]\d{0,4}\/v1\/embeddings$/.test(embedding.endpoint) ||
+			embedding.api_key_env ||
+			embedding.request_dimensions
+		)
+			throw new Error("Invalid managed embedding configuration.");
+	}
 	return config as unknown as RuntimeConfig;
 }

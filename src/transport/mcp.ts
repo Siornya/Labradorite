@@ -39,7 +39,7 @@ export function createMemoryServer(memory: {
 }) {
 	memory.store.bindScope(memory.scope);
 	const server = new Server(
-		{ name: "fish-memory", version: "0.0.0" },
+		{ name: "Labradorite", version: "0.0.0" },
 		{ capabilities: { tools: {} } },
 	);
 	server.setRequestHandler(ListToolsRequestSchema, async () => ({

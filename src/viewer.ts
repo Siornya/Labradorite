@@ -2,7 +2,7 @@ import sharp from "sharp";
 import { registerViewer } from "./viewer-registry.js";
 import { MaterialStore } from "./storage/materials.js";
 import { findPeople, readPerson } from "./storage/profiles.js";
-import { CompatibleEmbeddingProvider } from "./providers/embedding.js";
+import { runtimeProvider } from "./providers/local-embedding.js";
 import { DatabaseSync } from "node:sqlite";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
@@ -11,6 +11,7 @@ import { createServer } from "node:http";
 import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { loadRuntimeConfig } from "./runtime-config.js";
+import { defaultDataDirectory } from "./data-directory.js";
 import type { Material, Episode } from "./storage/materials.js";
 
 const args = process.argv.slice(2);
@@ -22,12 +23,7 @@ if (args.includes("--help")) {
 }
 const positional = args.filter((arg) => arg !== "--open");
 const [
-	runtime = process.env.LABRADORITE_RUNTIME ??
-		join(
-			process.env.LOCALAPPDATA ?? join(homedir(), ".local", "share"),
-			"fish-memory-test",
-			"runtime.json",
-		),
+	runtime = process.env.LABRADORITE_RUNTIME ?? join(defaultDataDirectory(), "runtime.json"),
 	portText = "4317",
 ] = positional;
 if (positional.length > 2 || !/^\d+$/.test(portText) || Number(portText) > 65535)
@@ -71,6 +67,7 @@ function openLibrary(path: string) {
 		throw error;
 	}
 	const scope = [config.space, config.world, config.character];
+	const embedding = runtimeProvider(config);
 	function material(id: string): Material | undefined {
 		const row = db.prepare("SELECT m.body" + materialFrom + " AND m.id=?").get(...scope, id) as
 			| Row
@@ -225,10 +222,7 @@ function openLibrary(path: string) {
 		);
 	}
 	async function search(query: string, lexical: boolean) {
-		const provider =
-			config.embedding && !lexical
-				? new CompatibleEmbeddingProvider(config.embedding)
-				: undefined;
+		const provider = lexical ? undefined : embedding;
 		const store = new MaterialStore(config.database, undefined, provider, "search");
 		try {
 			const result = await store.recallAsync(config, {
@@ -263,7 +257,18 @@ function openLibrary(path: string) {
 			store.close();
 		}
 	}
-	return { search, listing, detail, personDetail, material, config, close: () => db.close() };
+	return {
+		search,
+		listing,
+		detail,
+		personDetail,
+		material,
+		config,
+		close: () => {
+			embedding?.close?.();
+			db.close();
+		},
+	};
 }
 
 const suggested = dirname(resolve(runtime));

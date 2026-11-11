@@ -16,7 +16,7 @@ const input = {
 };
 
 test("unknown schemas and unrelated databases are not migrated or populated", () => {
-	const directory = mkdtempSync(join(tmpdir(), "fish-schema-"));
+	const directory = mkdtempSync(join(tmpdir(), "labradorite-schema-"));
 	const path = join(directory, "unknown.db");
 	const inspection = new Database(path);
 	try {
@@ -41,7 +41,7 @@ test("unknown schemas and unrelated databases are not migrated or populated", ()
 });
 
 test("material persists unchanged across reopen with stable idempotent receipt", () => {
-	const directory = mkdtempSync(join(tmpdir(), "fish-materials-"));
+	const directory = mkdtempSync(join(tmpdir(), "labradorite-materials-"));
 	const path = join(directory, "memory.db");
 	let store = new MaterialStore(path);
 	try {
@@ -101,7 +101,7 @@ test("scope isolation and reported source do not grant character authority", () 
 });
 
 test("failed operation insert rolls back material and sequence together", () => {
-	const directory = mkdtempSync(join(tmpdir(), "fish-rollback-"));
+	const directory = mkdtempSync(join(tmpdir(), "labradorite-rollback-"));
 	const path = join(directory, "memory.db");
 	const store = new MaterialStore(path);
 	const inspection = new Database(path);

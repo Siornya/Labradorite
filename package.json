@@ -1,5 +1,5 @@
 {
-	"name": "fish-memory-service",
+	"name": "labradorite",
 	"version": "0.0.0",
 	"private": true,
 	"description": "A long-term life memory service for virtual characters.",
@@ -21,6 +21,8 @@
 		"prepare": "vp config"
 	},
 	"dependencies": {
+		"@inquirer/input": "^5.1.9",
+		"@inquirer/select": "^5.2.8",
 		"@modelcontextprotocol/sdk": "1.32.2",
 		"ajv": "8.20.0",
 		"better-sqlite3": "13.0.3",

@@ -1,6 +1,6 @@
 {
 	"$schema": "http://json-schema.org/draft-07/schema#",
-	"$id": "urn:fish-memory:review-episode:v1",
+	"$id": "urn:labradorite:review-episode:v1",
 	"title": "ReviewEpisode",
 	"type": "object",
 	"additionalProperties": false,

@@ -1,6 +1,7 @@
 import { fork, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { CompatibleEmbeddingProvider } from "./providers/embedding.js";
+import type { EmbeddingProvider } from "./providers/embedding.js";
+import { runtimeProvider } from "./providers/local-embedding.js";
 import { loadRuntimeConfig } from "./runtime-config.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createMemoryServer } from "./transport/mcp.js";
@@ -8,10 +9,12 @@ import { MaterialStore } from "./storage/materials.js";
 
 let viewer: ChildProcess | undefined;
 let stopped = false;
+let provider: EmbeddingProvider | undefined;
 let store: MaterialStore | undefined;
 function closeStore() {
 	stopped = true;
-	viewer?.kill();
+	provider?.close?.();
+	if (viewer?.connected) viewer.disconnect();
 	viewer = undefined;
 	const current = store;
 	store = undefined;
@@ -24,11 +27,8 @@ try {
 		throw new Error("Usage: mcp-main runtime.json [--no-webview]");
 	const runtime = paths[0]!;
 	const config = loadRuntimeConfig(runtime);
-	store = new MaterialStore(
-		config.database,
-		undefined,
-		config.embedding ? new CompatibleEmbeddingProvider(config.embedding) : undefined,
-	);
+	provider = runtimeProvider(config);
+	store = new MaterialStore(config.database, undefined, provider);
 	const server = createMemoryServer({
 		store,
 		scope: { space: config.space, character: config.character, world: config.world },

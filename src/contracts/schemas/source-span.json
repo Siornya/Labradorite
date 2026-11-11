@@ -1,6 +1,6 @@
 {
 	"$schema": "http://json-schema.org/draft-07/schema#",
-	"$id": "urn:fish-memory:source-span:v1",
+	"$id": "urn:labradorite:source-span:v1",
 	"title": "SourceSpan",
 	"description": "A non-empty, half-open Unicode code point range. Ordering and source bounds are validated against the original text by application code.",
 	"type": "object",

@@ -35,7 +35,7 @@ function proposal(store: MaterialStore, ids: string[], operation_id = "organize-
 }
 
 test("experience loop preserves original views, detects stale work, revises and survives reopen", () => {
-	const dir = mkdtempSync(join(tmpdir(), "fish-loop-"));
+	const dir = mkdtempSync(join(tmpdir(), "labradorite-loop-"));
 	const path = join(dir, "memory.db");
 	let store = new MaterialStore(path);
 	try {

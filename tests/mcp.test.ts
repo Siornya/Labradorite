@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 test("model submits and reads original material through stdio MCP", async () => {
-	const directory = mkdtempSync(join(tmpdir(), "fish-mcp-"));
+	const directory = mkdtempSync(join(tmpdir(), "labradorite-mcp-"));
 	const config = join(directory, "runtime.json");
 	writeFileSync(
 		config,

@@ -1,6 +1,6 @@
 {
 	"$schema": "http://json-schema.org/draft-07/schema#",
-	"$id": "urn:fish-memory:amend-memory:v1",
+	"$id": "urn:labradorite:amend-memory:v1",
 	"title": "AmendMemory",
 	"type": "object",
 	"additionalProperties": false,

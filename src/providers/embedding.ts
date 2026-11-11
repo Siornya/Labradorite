@@ -95,6 +95,8 @@ export function validateEmbeddingConfig(value: unknown): EmbeddingConfig {
 }
 export interface EmbeddingProvider {
 	readonly config: EmbeddingConfig;
+	readonly spaceKey?: string;
+	close?(): void;
 	embed(input: string[]): Promise<{ vectors: number[][]; tokens: number | null }>;
 }
 export class CompatibleEmbeddingProvider implements EmbeddingProvider {
@@ -112,6 +114,14 @@ export class CompatibleEmbeddingProvider implements EmbeddingProvider {
 			input.some((x) => !x.trim() || Buffer.byteLength(x) > 16000)
 		)
 			throw new EmbeddingError("EMBEDDING_INPUT");
+		return this.requestVectors(input, this.config.dimensions);
+	}
+	static async probe(config: Omit<EmbeddingConfig, "dimensions">) {
+		const provider = new CompatibleEmbeddingProvider({ ...config, dimensions: 1 });
+		const { vectors } = await provider.requestVectors(["Labradorite 测试"], undefined);
+		return { ...config, dimensions: vectors[0]!.length };
+	}
+	protected async requestVectors(input: string[], dimensions: number | undefined) {
 		const key = this.config.api_key_env ? process.env[this.config.api_key_env] : undefined;
 		if (this.config.api_key_env && !key) throw new EmbeddingError("EMBEDDING_CONFIG");
 		try {
@@ -177,7 +187,10 @@ export class CompatibleEmbeddingProvider implements EmbeddingProvider {
 				)
 					throw new EmbeddingError("EMBEDDING_RESPONSE");
 				seen.add(row.index);
-				vectors[row.index] = normalizeVector(row.embedding, this.config.dimensions);
+				const size = dimensions ?? row.embedding?.length;
+				if (!Number.isInteger(size) || size < 1 || size > 8192)
+					throw new EmbeddingError("EMBEDDING_RESPONSE");
+				vectors[row.index] = normalizeVector(row.embedding, size);
 			}
 			const tokens = data.usage?.total_tokens;
 			return {

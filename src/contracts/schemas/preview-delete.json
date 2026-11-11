@@ -1,6 +1,6 @@
 {
 	"$schema": "http://json-schema.org/draft-07/schema#",
-	"$id": "urn:fish-memory:preview-delete:v1",
+	"$id": "urn:labradorite:preview-delete:v1",
 	"title": "PreviewDelete",
 	"type": "object",
 	"additionalProperties": false,

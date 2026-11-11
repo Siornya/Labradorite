@@ -1,6 +1,6 @@
 {
 	"$schema": "http://json-schema.org/draft-07/schema#",
-	"$id": "urn:fish-memory:index-memory:v1",
+	"$id": "urn:labradorite:index-memory:v1",
 	"title": "IndexMemory",
 	"type": "object",
 	"additionalProperties": false,

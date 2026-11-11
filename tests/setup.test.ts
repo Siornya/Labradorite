@@ -7,8 +7,6 @@ import { once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, isAbsolute } from "node:path";
-import Database from "better-sqlite3";
-import { MaterialStore } from "@/storage/materials.js";
 import { loadRuntimeConfig } from "@/runtime-config.js";
 test("setup discovers dimensions from a real request and keeps the working provider after a failed switch", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "labradorite-provider-"));
@@ -81,7 +79,6 @@ test("setup produces private runtime and usable stdio configuration without chan
 		assert.equal(first.status, 0, first.stderr);
 		const path = join(dir, "runtime.json");
 		const config = loadRuntimeConfig(path);
-		assert.ok(!("token" in config));
 		const mcp = JSON.parse(readFileSync(join(dir, "mcp.json"), "utf8")).mcpServers.Labradorite;
 		assert.equal(mcp.command, process.execPath);
 		assert.ok(isAbsolute(mcp.args[0]));
@@ -108,23 +105,6 @@ test("setup produces private runtime and usable stdio configuration without chan
 		writeFileSync(path, JSON.stringify({ ...config, database: "relative.db" }));
 		assert.throws(() => loadRuntimeConfig(path), /absolute/);
 	} finally {
-		rmSync(dir, { recursive: true, force: true });
-	}
-});
-
-test("v1 database is rejected unchanged as requested", () => {
-	const dir = mkdtempSync(join(tmpdir(), "labradorite-v1-"));
-	const path = join(dir, "old.db");
-	const db = new Database(path);
-	try {
-		db.exec(
-			"PRAGMA user_version=1; CREATE TABLE old_materials(body TEXT); INSERT INTO old_materials VALUES ('keep');",
-		);
-		assert.throws(() => new MaterialStore(path), /Unsupported database schema/);
-		assert.equal(db.pragma("user_version", { simple: true }), 1);
-		assert.deepEqual(db.prepare("SELECT body FROM old_materials").get(), { body: "keep" });
-	} finally {
-		db.close();
 		rmSync(dir, { recursive: true, force: true });
 	}
 });

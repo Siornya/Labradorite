@@ -21,10 +21,13 @@ test("unknown schemas and unrelated databases are not migrated or populated", ()
 	const inspection = new Database(path);
 	try {
 		inspection.exec(
-			"PRAGMA user_version=99; CREATE TABLE unrelated(value TEXT); INSERT INTO unrelated VALUES ('keep');",
+			"CREATE TABLE unrelated(value TEXT); INSERT INTO unrelated VALUES ('keep');",
 		);
-		assert.throws(() => new MaterialStore(path), /Unsupported database schema/);
-		assert.equal(inspection.pragma("user_version", { simple: true }), 99);
+		for (const version of [1, 99]) {
+			inspection.pragma("user_version=" + version);
+			assert.throws(() => new MaterialStore(path), /Unsupported database schema/);
+			assert.equal(inspection.pragma("user_version", { simple: true }), version);
+		}
 		inspection.exec("PRAGMA user_version=0;");
 		assert.throws(() => new MaterialStore(path), /unrecognized database/);
 		assert.deepEqual(inspection.prepare("SELECT value FROM unrelated").get(), {

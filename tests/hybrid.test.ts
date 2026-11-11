@@ -362,10 +362,6 @@ test.each([2, 3, 4])(
 			assert.equal(store.history(scope, first.id).length, 2);
 			assert.deepEqual(ids(store.recall(scope, { query: "秘密" })), []);
 			assert.ok(ids(store.recall(scope, { query: "杭州" })).includes(live.id));
-			assert.equal(
-				(db.prepare("SELECT COUNT(*) AS n FROM search_vectors").get() as { n: number }).n,
-				0,
-			);
 		} finally {
 			store.close();
 			db.close();

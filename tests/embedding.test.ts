@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vite-plus/test";
-import {
-	CompatibleEmbeddingProvider,
-	validateEmbeddingConfig,
-} from "@/providers/embedding.js";
+import { CompatibleEmbeddingProvider, validateEmbeddingConfig } from "@/providers/embedding.js";
 const config = {
 	endpoint: "https://example.invalid/v1/embeddings",
 	model: "test-model",

@@ -34,7 +34,8 @@ test("setup discovers dimensions from a real request and keeps the working provi
 		assert.ok(address && typeof address !== "string");
 		const setup = (...args: string[]) =>
 			promisify(execFile)(process.execPath, [
-				resolve("dist/src/setup.js"),
+				resolve("node_modules/vite-plus/bin/vpx"),
+				resolve("scripts/setup.ts"),
 				dir,
 				...args,
 			]);
@@ -71,7 +72,7 @@ test("setup produces private runtime and usable stdio configuration without chan
 		const run = () =>
 			spawnSync(
 				process.execPath,
-				[resolve("dist/src/setup.js"), dir],
+				[resolve("node_modules/vite-plus/bin/vpx"), resolve("scripts/setup.ts"), dir],
 				{
 					encoding: "utf8",
 				},

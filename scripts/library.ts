@@ -2,10 +2,10 @@ import Database from "better-sqlite3";
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { loadRuntimeConfig } from "./runtime-config.js";
-import { checksum } from "./storage/media.js";
-import { findPeople, readPerson } from "./storage/profiles.js";
-import type { Material, Episode } from "./storage/materials.js";
+import { loadRuntimeConfig } from "@/runtime-config.js";
+import { checksum } from "@/storage/media.js";
+import { findPeople, readPerson } from "@/storage/profiles.js";
+import type { Material, Episode } from "@/storage/materials.js";
 
 const [command, input, target] = process.argv.slice(2);
 if (

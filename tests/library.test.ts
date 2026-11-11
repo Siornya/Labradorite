@@ -26,9 +26,17 @@ test("MCP album, Markdown export and restored instance retain the original media
 		return JSON.parse((result.content as { text: string }[])[0]!.text);
 	};
 	const cli = (...args: string[]) =>
-		execFileSync(process.execPath, [resolve("dist/src/library.js"), ...args]);
+		execFileSync(process.execPath, [
+			resolve("node_modules/vite-plus/bin/vpx"),
+			resolve("scripts/library.ts"),
+			...args,
+		]);
 	try {
-		execFileSync(process.execPath, [resolve("dist/src/setup.js"), root]);
+		execFileSync(process.execPath, [
+			resolve("node_modules/vite-plus/bin/vpx"),
+			resolve("scripts/setup.ts"),
+			root,
+		]);
 		const runtime = join(root, "runtime.json");
 		const database = JSON.parse(readFileSync(runtime, "utf8")).database;
 		const photo = await sharp({

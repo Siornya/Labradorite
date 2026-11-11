@@ -1,4 +1,4 @@
-import { activeViewers } from "./viewer-registry.js";
+import { activeViewers } from "@/viewer-registry.js";
 const viewers = await activeViewers();
 if (!viewers.length) {
 	console.error("没有运行中的查看器。请启动记忆服务并启用 WebView。");

@@ -61,7 +61,7 @@ const mcp = {
 	mcpServers: {
 		Labradorite: {
 			command: process.execPath,
-			args: [fileURLToPath(new URL("./mcp-main.js", import.meta.url)), configPath],
+			args: [fileURLToPath(new URL("../dist/src/mcp-main.js", import.meta.url)), configPath],
 		},
 	},
 };

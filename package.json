@@ -15,9 +15,9 @@
 		"check": "vp run contracts:check && vp check && vp run test",
 		"start": "node dist/src/mcp-main.js",
 		"mcp": "node dist/src/mcp-main.js",
-		"viewer:url": "node dist/src/viewer-url.js",
-		"library": "node dist/src/library.js",
-		"setup": "node dist/src/setup.js",
+		"viewer:url": "vpx scripts/viewer-url.js",
+		"library": "vpx scripts/library.ts",
+		"setup": "vpx scripts/setup.ts",
 		"prepare": "vp config"
 	},
 	"dependencies": {

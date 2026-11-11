@@ -39,10 +39,14 @@ test("service starts a headless viewer by default and closes it with the MCP tra
 			}
 		}
 		assert.ok(url, "Expected a login link on stderr");
-		const cli = execFileSync(process.execPath, [resolve("dist/src/viewer-url.js")], {
-			encoding: "utf8",
-			env: { ...process.env, HOME: dir, USERPROFILE: dir },
-		});
+		const cli = execFileSync(
+			process.execPath,
+			[resolve("node_modules/vite-plus/bin/vpx"), resolve("scripts/viewer-url.js")],
+			{
+				encoding: "utf8",
+				env: { ...process.env, HOME: dir, USERPROFILE: dir },
+			},
+		);
 		assert.ok(cli.includes(url) && cli.includes("ssh -N -L"));
 		assert.equal((await fetch(url, { redirect: "manual" })).status, 303);
 		child.stdin.end();

@@ -2,7 +2,7 @@
 
 ## 定位与进程
 
-本项目是通用的 stdio MCP 记忆服务，由调用方 AI 客户端启动独立子进程。QQ 等平台接入、模型运行、自主活动调度、浏览器和电脑操作属于上层 AI 系统。本服务管理活动产生的来源与经历，不执行外部活动或生成回复；显式配置后可调用 embedding 接口构建检索向量。
+本项目是通用的 stdio MCP 记忆服务，由调用方 AI 客户端启动独立子进程。QQ 等平台接入、对话模型运行、自主活动调度、浏览器和电脑操作属于上层 AI 系统。本服务管理活动产生的来源与经历，可使用本地或外部 embedding 服务构建检索向量。
 
 AI 客户端 → stdio MCP → 记忆存储 → SQLite。
 
@@ -17,8 +17,10 @@ AI 客户端 → stdio MCP → 记忆存储 → SQLite。
 - src/retrieval/index.ts：同库全文与向量派生索引、分片、请求用量、分批构建及过期写回防护。
 - src/retrieval/algorithms.ts：中文分析、向量归一化与确定性排名融合。
 - src/providers/embedding.ts：有界 OpenAI 兼容 embedding 请求及响应校验。
-- src/runtime-config.ts：检查 database、space、character、world 与可选 embedding；拒绝未知字段，包括旧 token。
-- src/setup.ts：生成 runtime.json 与使用 Node 绝对路径的 mcp.json；保留合法已有配置。
+- src/runtime-config.ts：检查 database、space、character、world、embedding 和内置模式的 local_model。
+- scripts/setup-embedding.ts 与 src/providers/llama-install.ts：选择检索方式，安装并验证内置引擎与模型。
+- src/providers/local-embedding.ts：启动或复用本地 llama-server，为建索引和检索生成向量。
+- scripts/setup.ts：生成 runtime.json 与使用 Node 绝对路径的 mcp.json；保留合法已有配置。
 - src/contracts：JSON Schema 和生成类型，存储入口执行校验。
 - src/domain：可注入时钟及按 Unicode code point 定义的来源跨度。
 
@@ -87,7 +89,9 @@ runtime.json 中可选字段示例（endpoint 为完整接口 URL；数值须匹
 
 memory_index({max_batches:1}) 显式构建待处理片段，每批最多 8 段、单次 1–16 批；重复调用直至 pending_chunks=0，重启后跳过已完成部分。配置该服务表示允许将这些原文/经历片段发往 endpoint。memory_recall 默认 hybrid，有可用向量时发送查询文本；mode=lexical、空查询或没有已完成向量时不发送。无后台自动计费任务、自动重试或查询向量缓存。
 
-向量空间指纹包括 endpoint、model、维度、密钥环境变量名、维度请求模式、分析器和切片版本，不包含密钥值。配置变化后原向量不混用；同名模型被服务方替换时需要使用新的模型标识或不同 endpoint，不能自动检测语义漂移。旧空间向量不会参与新空间检索，相关材料删除时一并清理。
+外部接口的向量空间指纹包括 endpoint、model、维度、密钥环境变量名、维度请求模式、分析器和切片版本。同名模型被服务方替换时需要使用新的模型标识或不同 endpoint。旧空间向量随相关材料删除。
+
+内置模式由 setup 验证引擎和 GGUF，并将模型绝对路径及 SHA-256 保存到 `local_model`。MCP 和查看器有语义请求时复用本机端口上提供该模型的进程，或校验文件后启动 llama-server。运行包在用户缓存中，配置文件只指定模型。内置索引根据模型内容、引擎版本及输入处理方式识别；端口变化可以复用索引。推荐模型为 Qwen3-Embedding-0.6B Q8_0。内置模式将每个检索片段整体编码。选择自定义 GGUF 时，模型的上下文应能容纳项目最长 1024 个码点的片段。
 
 每次请求前在短事务中持久预留额度，网络在事务外执行。失败和崩溃不退还额度，重启不会重置；上限按数据库、UTC 日期共享，不是金额上限。返回 usage.total_tokens 时记录已知用量，缺失时计为未知，不推算成 0 token。索引失败返回 stopped；召回降级词法并返回 EMBEDDING_DISABLED、INDEX_PENDING、EMBEDDING_BUDGET、EMBEDDING_CONFIG、EMBEDDING_UNAVAILABLE 等原因。局部索引会报告 pending_chunks，不声称语义覆盖完整。旧数据库备份的恢复会同时恢复当时的本地用量记录；没有服务外成本账本。
 
@@ -140,4 +144,4 @@ ssh -N -L 4317:127.0.0.1:4317 user@server
 
 材料反向关联取自当前作用域内最新经历修订的来源引用。相册列表按需将照片转为最大 480×320 的 WebP，短描述取自已保存的材料正文；最多在进程内缓存 64 张。媒体请求会重新验证来源可见，详情仍可查看原文件。
 
-无桌面实例在用户目录 ~/.labradorite/viewers/ 记录当前进程的访问地址。登录链接是一项本机账户凭据。Unix 目录权限为 0700，记录为 0600；Windows 依赖账户目录 ACL。同一账号运行 node dist/src/viewer-url.js 可重新取得正在监听的实例地址及对应 SSH 转发命令。命令探测本机实例，不依赖服务日志；服务退出后旧链接失效。
+无桌面实例在用户目录 ~/.labradorite/viewers/ 记录当前进程的访问地址。登录链接是一项本机账户凭据。Unix 目录权限为 0700，记录为 0600；Windows 依赖账户目录 ACL。同一账号运行 vpr viewer:url 可重新取得正在监听的实例地址及对应 SSH 转发命令。命令探测本机实例，不依赖服务日志；服务退出后旧链接失效。

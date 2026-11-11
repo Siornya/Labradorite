@@ -9,18 +9,23 @@ Labradorite 为 AI 角色提供可追溯的长期记忆。AI 通过 **stdio MCP*
 准备 Node.js 24 或更高版本、[Vite+](https://viteplus.dev/) 的 `vp` 命令，以及支持 stdio MCP 的客户端。在仓库根目录运行：
 
 ```sh
-vp install --frozen-lockfile
-vp run build
-node dist/src/setup.js
+vp i --frozen-lockfile
+vpr build
+vpr setup
 ```
 
-初始化命令会输出 `runtime.json` 和 `mcp.json` 的绝对路径。要自己指定数据目录，可在首次初始化时运行 `node dist/src/setup.js "/path/to/data"`。请选择本机持久目录，活动数据库应放在同步盘之外。
+首次在终端运行 `setup` 时可以进行 embedding 配置：
 
-1. 打开生成的 `mcp.json`，将 `mcpServers` 下的 `fish-memory` 条目加入客户端。若客户端使用其他配置格式，照填其中的 `command` 和 `args`。
-2. 重新加载客户端。客户端会按配置启动服务，标准输入和标准输出用于 MCP 通信。
-3. 让 AI 调用 `memory_status`。如果能读到当前库的材料数和经历数，接入即已成功。
+- **内置 Qwen**：自动下载并配置 llama.cpp 和 Qwen3-Embedding-0.6B Q8_0（总共约 650 MB）
+- **手动配置 embedding**：填写已有服务的完整接口地址和模型名，或选择自己的 GGUF 文件
+- **仅全文检索**：直接生成配置，使用本地关键词检索
 
-第一次使用可以进行一个简单的测试，检测能否正确调用服务。
+完成后将 MCP 配置添加到 MCP 客户端：
+
+1. 按 setup 输出的路径打开 `mcp.json`，将其中的 `Labradorite` 条目复制到 MCP 客户端配置中，然后重新加载客户端。
+2. 让 AI 调用 `memory_status` 确认已连接。如果启用了语义检索且已有记忆，让 AI 调用 `memory_index` 分批建立索引，直到 `pending_chunks` 为 0。
+
+使用 AI 协助配置、自选数据目录或使用非交互方式部署，请查看[配置说明](docs/setup.md)
 
 ## 浏览记忆库
 
@@ -29,12 +34,12 @@ node dist/src/setup.js
 **无桌面服务器**上，在项目目录以启动服务的同一系统账号运行：
 
 ```sh
-node dist/src/viewer-url.js
+vpr viewer:url
 ```
 
 它会输出登录链接和与实际端口匹配的 SSH 转发命令。在自己的电脑执行该命令，将 `user@server` 替换为服务器账号和地址，然后在本地浏览器打开登录链接。需要切换记忆库时，网页中浏览的是服务器上的目录。
 
-不需要使用 webview 时，在客户端配置的 `args` 数组末尾加入 `"--no-webview"`，再重启服务。记忆的写入、更正和修订通过 MCP 完成。
+不需要 Web 查看器时，在客户端配置的 `args` 数组末尾加入 `"--no-webview"`，再重启服务。记忆的写入、更正和修订通过 MCP 完成。
 
 ## 材料、经历与检索
 
@@ -47,32 +52,16 @@ node dist/src/viewer-url.js
 | 管理相册   | `memory_import_media`、`memory_album`                     | 从入口目录归档照片和受支持的 MP4，按当前空间与世界浏览。                     |
 | 检查与删除 | `memory_status`、`memory_preview_delete`、`memory_delete` | 查看整理进度；删除前先查看受影响的材料、更正链和经历修订。                   |
 
-默认即可使用本地 SQLite 全文检索。有语义检索需求时，可在 `runtime.json` 中配置 OpenAI 兼容的 embedding 接口，再调用 `memory_index` 分批建立向量索引。建索引会把材料片段发送到所配置的服务，混合检索也可能发送查询文本；选择“仅本地全文”可在本机完成查询。配置示例和每日请求预算见[架构与配置说明](docs/architecture.md)。
+启用语义检索后，调用 `memory_index` 分批建立向量索引，直到 `pending_chunks` 为 0。建索引会把材料片段发送到所配置的服务，混合检索也可能发送查询文本。仅全文检索和内置 llama.cpp 都在本机处理记忆。[配置示例和每日请求预算](docs/architecture.md)
 
 整理经历时，上层 AI 可以为经常出现或对角色有重要意义的人建档。先用 `memory_people` 检查姓名和身份线索。调用 `memory_review` 时，用 `source_ids` 引用原始材料，加上 `person_review` 即可在保存经历的同时建立或更新档案。只关联经历时省略 `impression`。如果新认识也依据更早的经历，在 `other_episodes` 中列出相应 ID 和版本。
 
 空闲回顾时，上层 AI 可以用同一个 `memory_review`，通过 `episodes` 引用已存经历的 ID 和版本，写下完整的当前印象。例如“讨论复杂方案时，小林倾向先看草稿”。两种用法都默认直接保存。需要先预览时，加上 `dry_run: true` 即可。浏览器的“人物档案”和 `memory_read` 的 `kind: "person"` 都能查看历次判断，追溯到每次判断所依据的经历版本。更新服务首次打开 v2 或 v3 记忆库时会自动升级，保留已有材料和经历修订。
 
-## 数据、导出与恢复
+## 备份、导出与恢复
 
-`runtime.json` 的 `database` 字段指向 SQLite 数据库，保存原文、经历、来源关系、修订和检索索引。将待归档的文件放入 `<数据库路径>.inbox/`；成功导入的原文件保存在 `<数据库路径>.media/`。删除材料后，已有备份和磁盘上的共享媒体仍可能保留。
-
-在项目根目录运行以下命令，把示例路径换成自己的路径。每个输出目录都应是尚未创建的新目录。
-
-```sh
-# 导出当前作用域的 Markdown、相册首页及媒体，可用 Obsidian 或任意编辑器打开
-node dist/src/library.js markdown /path/to/runtime.json /path/to/new-vault
-
-# 备份整个数据库和仍被引用的媒体
-node dist/src/library.js backup /path/to/runtime.json /path/to/new-backup
-
-# 校验并恢复到新的数据目录，再生成客户端配置
-node dist/src/library.js restore /path/to/new-backup /path/to/new-data
-node dist/src/setup.js /path/to/new-data
-```
-
-Markdown 是可读副本，在外部修改它只会改变导出文件。搬迁服务时使用完整备份，并让客户端加载恢复后的 MCP 配置。
+支持完整备份记忆库及媒体文件，也可导出 Markdown，用其他编辑器浏览。搬迁或恢复服务时使用完整备份；Markdown 导出仅供阅读。具体命令见[备份、导出与恢复说明](docs/backup.md)。
 
 ## 开发
 
-项目使用 TypeScript、Vite+、pnpm、Oxc 和 Vitest。在根目录运行 `vp run check`，可检查生成契约、格式和类型，并完成构建与测试。
+项目使用 TypeScript、Vite+、pnpm、Oxc 和 Vitest。在根目录运行 `vpr check`，可检查生成契约、格式和类型，并完成构建与测试。

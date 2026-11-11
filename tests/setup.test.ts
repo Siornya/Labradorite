@@ -5,8 +5,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, isAbsolute } from "node:path";
 import Database from "better-sqlite3";
-import { MaterialStore } from "../src/storage/materials.js";
-import { loadRuntimeConfig } from "../src/runtime-config.js";
+import { MaterialStore } from "@/storage/materials.js";
+import { loadRuntimeConfig } from "@/runtime-config.js";
 
 test("setup produces private runtime and usable stdio configuration without changing existing settings", () => {
 	const dir = mkdtempSync(join(tmpdir(), "fish-setup-"));

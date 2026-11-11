@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { MaterialStore } from "../src/storage/materials.js";
+import { MaterialStore } from "@/storage/materials.js";
 
 const scope = { space: "own", character: "reader", world: "real" };
 const input = {

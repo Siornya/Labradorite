@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vite-plus/test";
-import { readSourceSpan } from "../src/domain/source-span.js";
+import { readSourceSpan } from "@/domain/source-span.js";
 
 test("source spans preserve Chinese, emoji and combining marks", () => {
 	const text = "我📖读e\u0301第二章";

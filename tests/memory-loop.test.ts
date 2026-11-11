@@ -3,7 +3,7 @@ import { test } from "vite-plus/test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MaterialStore } from "../src/storage/materials.js";
+import { MaterialStore } from "@/storage/materials.js";
 
 const scope = { space: "life", character: "writer", world: "real" };
 const source = (operation_id: string, text: string) => ({

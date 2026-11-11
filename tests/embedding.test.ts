@@ -3,7 +3,7 @@ import { test } from "vite-plus/test";
 import {
 	CompatibleEmbeddingProvider,
 	validateEmbeddingConfig,
-} from "../src/providers/embedding.js";
+} from "@/providers/embedding.js";
 const config = {
 	endpoint: "https://example.invalid/v1/embeddings",
 	model: "test-model",

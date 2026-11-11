@@ -7,7 +7,7 @@ import {
 	reciprocalRankFusion,
 	normalizeVector,
 	cosineNormalized,
-} from "../src/retrieval/algorithms.js";
+} from "@/retrieval/algorithms.js";
 
 test("versioned Chinese analyzer preserves short names emoji and safe FTS expressions", () => {
 	const db = new Database(":memory:");

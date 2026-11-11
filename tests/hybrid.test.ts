@@ -4,9 +4,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { MaterialStore, type MemoryScope } from "../src/storage/materials.js";
-import { ManualClock } from "../src/domain/clock.js";
-import { EmbeddingError, type EmbeddingProvider } from "../src/providers/embedding.js";
+import { MaterialStore, type MemoryScope } from "@/storage/materials.js";
+import { ManualClock } from "@/domain/clock.js";
+import { EmbeddingError, type EmbeddingProvider } from "@/providers/embedding.js";
 
 const scope = { space: "home", character: "reader", world: "real" };
 const config = {

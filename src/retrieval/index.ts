@@ -1,8 +1,8 @@
 import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
-import type { MemoryScope, Material, Episode } from "../storage/materials.js";
-import type { Clock } from "../domain/clock.js";
-import { EmbeddingError, type EmbeddingProvider } from "../providers/embedding.js";
+import type { MemoryScope, Material, Episode } from "@/storage/materials.js";
+import type { Clock } from "@/domain/clock.js";
+import { EmbeddingError, type EmbeddingProvider } from "@/providers/embedding.js";
 import {
 	ANALYZER_VERSION,
 	indexText,

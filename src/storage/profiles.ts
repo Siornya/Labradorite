@@ -1,4 +1,4 @@
-import type { ReviewPerson } from "../contracts/generated/review-person.js";
+import type { ReviewPerson } from "@/contracts/generated/review-person.js";
 import type { MemoryScope } from "./materials.js";
 
 export const profileSchema = `

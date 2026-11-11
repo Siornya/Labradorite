@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vite-plus/test";
-import { MaterialStore } from "../src/storage/materials.js";
-import { ManualClock } from "../src/domain/clock.js";
+import { MaterialStore } from "@/storage/materials.js";
+import { ManualClock } from "@/domain/clock.js";
 
 const scope = { space: "review", character: "reader", world: "real" };
 const material = (operation_id: string, text = operation_id) => ({

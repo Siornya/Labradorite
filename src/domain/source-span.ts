@@ -1,4 +1,4 @@
-import type { SourceSpan } from "../contracts/generated/source-span.js";
+import type { SourceSpan } from "@/contracts/generated/source-span.js";
 
 /** Preserves original text: code points, not UTF-16 units, bytes, or grapheme clusters. */
 export function readSourceSpan(text: string, span: SourceSpan): string {

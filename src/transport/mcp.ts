@@ -1,16 +1,16 @@
-import { importMedia } from "../storage/media.js";
-import reviewPersonSchema from "../contracts/schemas/review-person.json" with { type: "json" };
-import indexSchema from "../contracts/schemas/index-memory.json" with { type: "json" };
-import { EmbeddingError } from "../providers/embedding.js";
-import previewDeleteSchema from "../contracts/schemas/preview-delete.json" with { type: "json" };
-import amendSchema from "../contracts/schemas/amend-memory.json" with { type: "json" };
-import reviewEpisodeSchema from "../contracts/schemas/review-episode.json" with { type: "json" };
-import recallSchema from "../contracts/schemas/recall-memory.json" with { type: "json" };
-import deleteSchema from "../contracts/schemas/delete-memory.json" with { type: "json" };
+import { importMedia } from "@/storage/media.js";
+import reviewPersonSchema from "@/contracts/schemas/review-person.json" with { type: "json" };
+import indexSchema from "@/contracts/schemas/index-memory.json" with { type: "json" };
+import { EmbeddingError } from "@/providers/embedding.js";
+import previewDeleteSchema from "@/contracts/schemas/preview-delete.json" with { type: "json" };
+import amendSchema from "@/contracts/schemas/amend-memory.json" with { type: "json" };
+import reviewEpisodeSchema from "@/contracts/schemas/review-episode.json" with { type: "json" };
+import recallSchema from "@/contracts/schemas/recall-memory.json" with { type: "json" };
+import deleteSchema from "@/contracts/schemas/delete-memory.json" with { type: "json" };
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import submitSchema from "../contracts/schemas/submit-material.json" with { type: "json" };
-import { MaterialError, type MaterialStore, type MemoryScope } from "../storage/materials.js";
+import submitSchema from "@/contracts/schemas/submit-material.json" with { type: "json" };
+import { MaterialError, type MaterialStore, type MemoryScope } from "@/storage/materials.js";
 
 const dryRun = {
 	type: "boolean",

@@ -1,4 +1,4 @@
-import { normalizeVector } from "../retrieval/algorithms.js";
+import { normalizeVector } from "@/retrieval/algorithms.js";
 
 export interface EmbeddingConfig {
 	endpoint: string;

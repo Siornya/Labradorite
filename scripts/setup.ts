@@ -1,6 +1,7 @@
 import {
 	mkdirSync,
 	existsSync,
+	statSync,
 	writeFileSync,
 	copyFileSync,
 	constants,
@@ -25,7 +26,12 @@ const { values, positionals } = parseArgs({
 	},
 });
 if (positionals.length > 1)
-	throw new Error("Usage: setup [data-directory] [--embedding local|external|lexical]");
+	throw new Error("用法：vpr setup [data-dir] [--embedding local|external|lexical]");
+const serverPath = fileURLToPath(new URL("../dist/src/mcp-main.js", import.meta.url));
+if (!statSync(serverPath, { throwIfNoEntry: false })?.isFile()) {
+	console.error("未找到 MCP 服务构建产物。请先在项目根目录运行 vpr build，再运行 vpr setup。");
+	process.exit(1);
+}
 const directory = await prepareDataDirectory(positionals[0]);
 mkdirSync(directory, { recursive: true, mode: 0o700 });
 const configPath = join(directory, "runtime.json");
@@ -61,14 +67,14 @@ const mcp = {
 	mcpServers: {
 		Labradorite: {
 			command: process.execPath,
-			args: [fileURLToPath(new URL("../dist/src/mcp-main.js", import.meta.url)), configPath],
+			args: [serverPath, configPath],
 		},
 	},
 };
 const mcpPath = join(directory, "mcp.json");
 writeFileSync(mcpPath, JSON.stringify(mcp, null, "\t") + "\n", { mode: 0o600 });
-console.info(`Runtime configuration: ${configPath}`);
-console.info(`MCP client configuration: ${mcpPath}`);
+console.info(`运行配置：${configPath}`);
+console.info(`MCP 客户端配置：${mcpPath}`);
 console.info(
-	"Add Labradorite from the MCP configuration to your client; it owns the server process.",
+	"请将 mcp.json 中的 Labradorite 条目加入 MCP 客户端配置，然后重新加载客户端。服务由客户端启动和管理。更多内容见 README。",
 );

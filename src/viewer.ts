@@ -1,8 +1,7 @@
 import sharp from "sharp";
 import { registerViewer } from "./viewer-registry.js";
-import { MaterialStore } from "./storage/materials.js";
+import { createSearchClient, searchLibrary as searchLocalLibrary } from "./viewer-search.js";
 import { findPeople, readPerson } from "./storage/profiles.js";
-import { runtimeProvider } from "./providers/local-embedding.js";
 import { DatabaseSync } from "node:sqlite";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
@@ -28,6 +27,14 @@ const [
 ] = positional;
 if (positional.length > 2 || !/^\d+$/.test(portText) || Number(portText) > 65535)
 	throw new Error("Usage: Labradorite Viewer [runtime.json] [port] [--open]");
+const managed = !!process.send;
+const standaloneNotice =
+	"查看器未通过 MCP 服务启动，仅支持浏览和全文检索，语义检索不可用。推荐通过已配置 Labradorite 的 MCP 客户端启动记忆服务，使用服务自动打开的查看器；也可在项目目录运行 vpr viewer:url 获取该服务的登录链接。接入步骤见 README。";
+if (!managed) console.error(standaloneNotice);
+const searchLibrary = managed
+	? createSearchClient()
+	: (config: Parameters<typeof searchLocalLibrary>[0], query: string) =>
+			searchLocalLibrary(config, query, true);
 const materialFrom =
 	" FROM materials m JOIN spaces s ON s.id=m.space WHERE m.space=? AND m.world=? AND s.character=? AND NOT EXISTS(SELECT 1 FROM tombstones t WHERE t.id=m.id)";
 const episodeFrom =
@@ -43,7 +50,7 @@ const names = { episodes: "经历", people: "人物档案", album: "相册", mat
 type Tab = keyof typeof names;
 function layout(tab: Tab | null, content: string) {
 	const searchForm = tab
-		? '<form action="/search"><input type="search" name="q" aria-label="搜索整个记忆库" maxlength="512" placeholder="搜索经历、人物、材料和相册" required><select name="mode" aria-label="检索方式"><option value="hybrid">混合检索</option><option value="lexical">仅本地全文</option></select><button>全库搜索</button></form>'
+		? `<form action="/search"><input type="search" name="q" aria-label="搜索整个记忆库" maxlength="512" placeholder="搜索经历、人物、材料和相册" required><select name="mode" aria-label="检索方式">${managed ? '<option value="hybrid">混合检索</option>' : ""}<option value="lexical">仅本地全文</option></select><button>全库搜索</button></form>`
 		: "";
 	const tabs = Object.entries(names)
 		.map(
@@ -52,7 +59,7 @@ function layout(tab: Tab | null, content: string) {
 		)
 		.join("");
 	return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Labradorite · 记忆库</title><style>
-*{box-sizing:border-box}body{margin:0;background:#f6f5f0;color:#233632;font:16px/1.65 "Source Sans 3","Microsoft YaHei",sans-serif}header{background:#153d39;color:#faf6e9;padding:16px max(5vw,24px);display:flex;align-items:center;gap:32px;flex-wrap:wrap}strong,h1,h2{font-family:"DM Serif Text","Songti SC",serif}header strong{font-size:24px}nav{display:flex;gap:20px}a{color:#20665e}nav a{color:inherit;text-decoration:none}nav a[aria-current]{border-bottom:2px solid #d4b879}main{max-width:1024px;margin:32px auto;padding:0 24px 48px}h1{font-size:32px}h2{font-size:20px}article,section{border-bottom:1px solid #cad3ca;padding:15px 0}small{color:#51635d}.grid{display:grid;gap:20px;grid-template-columns:repeat(auto-fit,minmax(min(225px,100%),1fr))}.grid img{width:100%;height:180px;object-fit:cover}.grid article{min-width:0}img,video{display:block;max-width:100%;max-height:65vh}p,h1,h2,a{overflow-wrap:anywhere}p{white-space:pre-wrap}form{display:flex;gap:8px}form{flex-wrap:wrap}input,button,select{font:inherit;padding:6px 12px;border:1px solid #849b90;border-radius:4px}input{max-width:75%}button{background:#205249;color:white;cursor:pointer}</style><header><strong>Labradorite</strong><nav>${tab ? tabs + ' <a href="/choose">切换记忆库</a>' : ""}</nav></header><main>${searchForm}${content}</main></html>`;
+*{box-sizing:border-box}body{margin:0;background:#f6f5f0;color:#233632;font:16px/1.65 "Source Sans 3","Microsoft YaHei",sans-serif}header{background:#153d39;color:#faf6e9;padding:16px max(5vw,24px);display:flex;align-items:center;gap:32px;flex-wrap:wrap}strong,h1,h2{font-family:"DM Serif Text","Songti SC",serif}header strong{font-size:24px}nav{display:flex;gap:20px}a{color:#20665e}nav a{color:inherit;text-decoration:none}nav a[aria-current]{border-bottom:2px solid #d4b879}main{max-width:1024px;margin:32px auto;padding:0 24px 48px}h1{font-size:32px}h2{font-size:20px}article,section{border-bottom:1px solid #cad3ca;padding:15px 0}small{color:#51635d}.grid{display:grid;gap:20px;grid-template-columns:repeat(auto-fit,minmax(min(225px,100%),1fr))}.grid img{width:100%;height:180px;object-fit:cover}.grid article{min-width:0}img,video{display:block;max-width:100%;max-height:65vh}p,h1,h2,a{overflow-wrap:anywhere}p{white-space:pre-wrap}form{display:flex;gap:8px}form{flex-wrap:wrap}input,button,select{font:inherit;padding:6px 12px;border:1px solid #849b90;border-radius:4px}input{max-width:75%}button{background:#205249;color:white;cursor:pointer}</style><header><strong>Labradorite</strong><nav>${tab ? tabs + ' <a href="/choose">切换记忆库</a>' : ""}</nav></header><main>${managed ? "" : `<p role="status">${standaloneNotice}</p>`}${searchForm}${content}</main></html>`;
 }
 function openLibrary(path: string) {
 	const config = loadRuntimeConfig(path);
@@ -67,7 +74,6 @@ function openLibrary(path: string) {
 		throw error;
 	}
 	const scope = [config.space, config.world, config.character];
-	const embedding = runtimeProvider(config);
 	function material(id: string): Material | undefined {
 		const row = db.prepare("SELECT m.body" + materialFrom + " AND m.id=?").get(...scope, id) as
 			| Row
@@ -222,40 +228,28 @@ function openLibrary(path: string) {
 		);
 	}
 	async function search(query: string, lexical: boolean) {
-		const provider = lexical ? undefined : embedding;
-		const store = new MaterialStore(config.database, undefined, provider, "search");
-		try {
-			const result = await store.recallAsync(config, {
-				query,
-				limit: 20,
-				max_bytes: 65536,
-				mode: lexical ? "lexical" : "hybrid",
-			});
-			const rows = result.items as {
-				kind: "episode" | "material";
-				id: string;
-				excerpt?: string;
-				stale: boolean;
-			}[];
-			const people =
-				version === 4 ? findPeople(db, config, query).items.map(personCard).join("") : "";
-			const cards =
-				people +
-				rows
-					.map((item) => {
-						const m = item.kind === "material" ? material(item.id) : undefined;
-						const label =
-							item.kind === "episode" ? "经历" : m?.media ? "相册材料" : "材料";
-						return `<article><small>${label}${item.stale ? " · 有后续更正" : ""}</small><p><a href="/${item.kind}/${encodeURIComponent(item.id)}">${escape(item.excerpt ?? "展开记录")}</a></p></article>`;
-					})
-					.join("");
-			return layout(
-				"episodes",
-				`<h1>搜索结果</h1><p>${escape(query)} · ${result.diagnostics.semantic.used ? "混合检索" : "全文检索"}</p>${cards || "<p>没有匹配的记录。</p>"}`,
-			);
-		} finally {
-			store.close();
-		}
+		const result = await searchLibrary(config, query, lexical);
+		const rows = result.items as {
+			kind: "episode" | "material";
+			id: string;
+			excerpt?: string;
+			stale: boolean;
+		}[];
+		const people =
+			version === 4 ? findPeople(db, config, query).items.map(personCard).join("") : "";
+		const cards =
+			people +
+			rows
+				.map((item) => {
+					const m = item.kind === "material" ? material(item.id) : undefined;
+					const label = item.kind === "episode" ? "经历" : m?.media ? "相册材料" : "材料";
+					return `<article><small>${label}${item.stale ? " · 有后续更正" : ""}</small><p><a href="/${item.kind}/${encodeURIComponent(item.id)}">${escape(item.excerpt ?? "展开记录")}</a></p></article>`;
+				})
+				.join("");
+		return layout(
+			"episodes",
+			`<h1>搜索结果</h1><p>${escape(query)} · ${result.diagnostics.semantic.used ? "混合检索" : "全文检索"}</p>${cards || "<p>没有匹配的记录。</p>"}`,
+		);
 	}
 	return {
 		search,
@@ -265,7 +259,6 @@ function openLibrary(path: string) {
 		material,
 		config,
 		close: () => {
-			embedding?.close?.();
 			db.close();
 		},
 	};
@@ -474,8 +467,15 @@ const server = createServer(async (req, res) => {
 		fail((error as NodeJS.ErrnoException).code === "ENOENT" ? 404 : 500);
 	}
 });
+function shutdown(code: number) {
+	for (const session of sessions.values()) session.library?.close();
+	sessions.clear();
+	process.exit(code);
+}
+process.once("SIGINT", () => shutdown(130));
+process.once("SIGTERM", () => shutdown(143));
 // A managed viewer also exits if its MCP parent terminates unexpectedly.
-if (process.send) process.once("disconnect", () => process.exit(0));
+if (process.send) process.once("disconnect", () => shutdown(0));
 function listen(port: number) {
 	server.once("error", (error: NodeJS.ErrnoException) => {
 		if (process.send && error.code === "EADDRINUSE" && port !== 0) {

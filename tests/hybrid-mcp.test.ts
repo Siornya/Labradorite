@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { test } from "vite-plus/test";
 import { createServer } from "node:http";
 import { once } from "node:events";
+import { createInterface } from "node:readline";
+import type { Readable } from "node:stream";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -66,13 +68,24 @@ test("stdio MCP indexes through compatible HTTP embeddings and returns source-ba
 				},
 			}),
 		);
-		await client.connect(
-			new StdioClientTransport({
-				command: process.execPath,
-				args: [resolve("dist/src/mcp-main.js"), path, "--no-webview"],
-				stderr: "pipe",
-			}),
-		);
+		const transport = new StdioClientTransport({
+			command: process.execPath,
+			args: [resolve("dist/src/mcp-main.js"), path],
+			stderr: "pipe",
+			env: {
+				...process.env,
+				SSH_CONNECTION: "test",
+				HOME: directory,
+				USERPROFILE: directory,
+			} as Record<string, string>,
+		});
+		const viewerUrl = (async () => {
+			for await (const line of createInterface({ input: transport.stderr as Readable })) {
+				if (line.startsWith("http://127.0.0.1:")) return line;
+			}
+			throw new Error("Viewer did not start");
+		})();
+		await client.connect(transport);
 		const call = async (name: string, args: Record<string, unknown>) => {
 			const result = await client.callTool({ name, arguments: args });
 			assert.equal(result.isError, false, JSON.stringify(result));
@@ -108,23 +121,29 @@ test("stdio MCP indexes through compatible HTTP embeddings and returns source-ba
 		const closed = once(viewer, "exit");
 		try {
 			const [output] = await once(viewer.stdout, "data");
-			const login = new URL(String(output).trim());
-			const ticket = await fetch(login, { redirect: "manual" });
-			const cookie = ticket.headers.get("set-cookie")!.split(";")[0]!;
-			await fetch(new URL("/select?current=1", login), {
-				method: "POST",
-				headers: { cookie, origin: login.origin },
-				redirect: "manual",
-			});
-			const search = new URL("/search", login);
-			search.searchParams.set("q", "脚踏出游");
-			const result = await (await fetch(search, { headers: { cookie } })).text();
-			assert.ok(
-				result.includes("/material/" + receipt.material.id) && result.includes("混合检索"),
-			);
-			search.searchParams.set("mode", "lexical");
-			const local = await (await fetch(search, { headers: { cookie } })).text();
-			assert.ok(!local.includes("/material/" + receipt.material.id));
+			for (const address of [await viewerUrl, String(output).trim()]) {
+				const login = new URL(address);
+				const ticket = await fetch(login, { redirect: "manual" });
+				const cookie = ticket.headers.get("set-cookie")!.split(";")[0]!;
+				await fetch(new URL("/select?current=1", login), {
+					method: "POST",
+					headers: { cookie, origin: login.origin },
+					redirect: "manual",
+				});
+				const search = new URL("/search", login);
+				search.searchParams.set("q", "脚踏出游");
+				const result = await (await fetch(search, { headers: { cookie } })).text();
+				const managed = address === (await viewerUrl);
+				assert.equal(result.includes("/material/" + receipt.material.id), managed);
+				assert.equal(result.includes("混合检索"), managed);
+				if (!managed) assert.ok(result.includes("语义检索不可用"));
+				search.searchParams.set("mode", "lexical");
+				const local = await (await fetch(search, { headers: { cookie } })).text();
+				assert.ok(!local.includes("/material/" + receipt.material.id));
+				search.searchParams.set("q", "自行车");
+				const matched = await (await fetch(search, { headers: { cookie } })).text();
+				assert.ok(matched.includes("/material/" + receipt.material.id));
+			}
 		} finally {
 			viewer.kill();
 			await closed;

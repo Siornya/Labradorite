@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { MemoryScope, Material, Episode } from "@/storage/materials.js";
 import type { Clock } from "@/domain/clock.js";
 import { EmbeddingError, type EmbeddingProvider } from "@/providers/embedding.js";
+import { IndexJob } from "./index-job.js";
 import {
 	ANALYZER_VERSION,
 	indexText,
@@ -12,6 +13,10 @@ import {
 } from "./algorithms.js";
 
 export const CHUNK_VERSION = "codepoints-1024-overlap128-v1";
+export interface IndexOptions {
+	signal?: AbortSignal;
+	onProgress?: (status: ReturnType<SearchIndex["status"]>) => void;
+}
 export type Kind = "material" | "episode";
 export interface Hit {
 	id: string;
@@ -182,6 +187,12 @@ export class SearchIndex {
 	#day() {
 		return this.clock.now().toISOString().slice(0, 10);
 	}
+	#job(scope: MemoryScope) {
+		return new IndexJob(
+			this.db,
+			"index-job:" + JSON.stringify([scope.space, scope.world, this.profile]),
+		);
+	}
 	status(scope: MemoryScope) {
 		const counts = this.db
 			.prepare(`SELECT COUNT(*) AS chunks, COUNT(v.chunk) AS embedded_chunks
@@ -216,6 +227,7 @@ export class SearchIndex {
 			chunker: CHUNK_VERSION,
 			usage: { day: this.#day(), database_wide: true, ...usage },
 			max_requests_per_day: this.provider?.config.max_requests_per_day ?? 0,
+			indexing: this.#job(scope).status(),
 		};
 	}
 	async #embed(input: string[]) {
@@ -249,22 +261,69 @@ export class SearchIndex {
 	async query(text: string) {
 		return (await this.#embed([text]))[0]!;
 	}
-	async index(scope: MemoryScope, maxBatches: number) {
+	async index(scope: MemoryScope, maxBatches: number, options: IndexOptions = {}) {
 		if (this.#busy) throw new EmbeddingError("EMBEDDING_BUSY");
 		if (!this.provider) throw new EmbeddingError("EMBEDDING_DISABLED");
+		const job = this.#job(scope);
+		job.claim();
 		this.#busy = true;
+		let leaseLost = false;
+		const heartbeat = setInterval(() => {
+			try {
+				job.update("running");
+			} catch {
+				leaseLost = true;
+			}
+		}, 5_000);
 		let indexed = 0,
 			discarded = 0,
 			batches = 0,
 			stopped: string | null = null;
+		const finish = this.db.transaction((onlyIfComplete: boolean) => {
+			const status = this.status(scope);
+			const complete = status.pending_chunks === 0;
+			if (onlyIfComplete && !complete) return undefined;
+			if (complete) stopped = null;
+			job.update(
+				complete
+					? "completed"
+					: stopped === "INDEX_CANCELLED"
+						? "cancelled"
+						: stopped
+							? "stopped"
+							: "paused",
+				stopped,
+			);
+			return {
+				indexed_chunks: indexed,
+				discarded_chunks: discarded,
+				batches,
+				stopped,
+				...status,
+				indexing: job.status(),
+			};
+		});
 		try {
+			options.onProgress?.(this.status(scope));
 			for (; batches < maxBatches; batches++) {
+				if (leaseLost) throw new EmbeddingError("EMBEDDING_BUSY");
+				job.update("running");
+				if (options.signal?.aborted) {
+					stopped = "INDEX_CANCELLED";
+					break;
+				}
 				const rows = this.db
 					.prepare(`SELECT c.key,c.id,c.kind,c.text,c.start FROM search_chunks c
 					WHERE c.space=? AND c.world=? AND NOT EXISTS(SELECT 1 FROM search_vectors v WHERE v.chunk=c.key AND v.profile=?)
 					ORDER BY c.rowid LIMIT 8`)
 					.all(scope.space, scope.world, this.profile) as Chunk[];
-				if (!rows.length) break;
+				if (!rows.length) {
+					// Finish against one snapshot. A concurrent material write can add
+					// pending chunks after selection, in which case keep processing.
+					const result = finish.immediate(true);
+					if (result) return result;
+					continue;
+				}
 				let vectors: number[][];
 				try {
 					vectors = await this.#embed(rows.map((x) => x.text));
@@ -275,6 +334,8 @@ export class SearchIndex {
 				}
 				this.db
 					.transaction(() => {
+						if (leaseLost) throw new EmbeddingError("EMBEDDING_BUSY");
+						job.update("running");
 						for (let i = 0; i < rows.length; i++) {
 							// A deleted source or replaced revision cannot be resurrected by late network responses.
 							const row = rows[i]!;
@@ -293,15 +354,21 @@ export class SearchIndex {
 						}
 					})
 					.immediate();
+				options.onProgress?.(this.status(scope));
 			}
-			return {
-				indexed_chunks: indexed,
-				discarded_chunks: discarded,
-				batches,
-				stopped,
-				...this.status(scope),
-			};
+			return finish.immediate(false)!;
+		} catch (error) {
+			try {
+				job.update(
+					"stopped",
+					error instanceof EmbeddingError ? error.code : "INDEX_FAILED",
+				);
+			} catch {
+				// A different owner must retain its status; an expired lease is resumable.
+			}
+			throw error;
 		} finally {
+			clearInterval(heartbeat);
 			this.#busy = false;
 		}
 	}

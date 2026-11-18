@@ -4,7 +4,7 @@ import reviewSchema from "@/contracts/schemas/review-person.json" with { type: "
 import type { ReviewPerson } from "@/contracts/generated/review-person.js";
 import indexSchema from "@/contracts/schemas/index-memory.json" with { type: "json" };
 import type { IndexMemory } from "@/contracts/generated/index-memory.js";
-import { SearchIndex, searchText, type Hit } from "@/retrieval/index.js";
+import { SearchIndex, searchText, type Hit, type IndexOptions } from "@/retrieval/index.js";
 import { analyze, reciprocalRankFusion } from "@/retrieval/algorithms.js";
 import { EmbeddingError, type EmbeddingProvider } from "@/providers/embedding.js";
 import previewDeleteSchema from "@/contracts/schemas/preview-delete.json" with { type: "json" };
@@ -114,16 +114,16 @@ export class MaterialStore {
 		path: string,
 		private readonly clock: Clock = new SystemClock(),
 		provider?: EmbeddingProvider,
-		access: "service" | "search" = "service",
+		access: "service" | "search" | "inspect" = "service",
 	) {
 		this.#db = new Database(path, {
-			fileMustExist: access === "search",
-			readonly: access === "search" && !provider,
+			fileMustExist: access !== "service",
+			readonly: access === "inspect" || (access === "search" && !provider),
 		});
 		this.#search = new SearchIndex(this.#db, clock, provider);
 		try {
 			const version = this.#db.pragma("user_version", { simple: true });
-			if (access === "search" && version !== 3 && version !== 4)
+			if (access !== "service" && version !== 3 && version !== 4)
 				throw new Error("Search requires a v3 or v4 database.");
 			if (version !== 0 && version !== 2 && version !== 3 && version !== 4)
 				throw new Error("Unsupported database schema.");
@@ -774,6 +774,14 @@ export class MaterialStore {
 		const batches = input.max_batches ?? 1;
 		this.sequence(scope);
 		return this.#search.index(scope, batches);
+	}
+	retrievalStatus(scope: MemoryScope) {
+		this.sequence(scope);
+		return this.#search.status(scope);
+	}
+	async indexAll(scope: MemoryScope, options: IndexOptions = {}) {
+		this.sequence(scope);
+		return this.#search.index(scope, Infinity, options);
 	}
 	async recallAsync(scope: MemoryScope, input: unknown) {
 		this.#validateRecall(input);

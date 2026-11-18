@@ -1,6 +1,6 @@
 import { importMedia } from "@/storage/media.js";
 import reviewPersonSchema from "@/contracts/schemas/review-person.json" with { type: "json" };
-import indexSchema from "@/contracts/schemas/index-memory.json" with { type: "json" };
+import type { ReviewIndex } from "@/retrieval/review-index.js";
 import { EmbeddingError } from "@/providers/embedding.js";
 import previewDeleteSchema from "@/contracts/schemas/preview-delete.json" with { type: "json" };
 import amendSchema from "@/contracts/schemas/amend-memory.json" with { type: "json" };
@@ -24,11 +24,13 @@ const reviewSchema = {
 		...reviewPersonSchema.properties,
 		dry_run: dryRun,
 	},
-	required: ["operation_id", "base_seq"],
-	oneOf: [reviewEpisodeSchema, reviewPersonSchema].map((schema) => ({
-		...schema,
-		properties: { ...schema.properties, dry_run: dryRun },
-	})),
+	oneOf: [
+		{ type: "object", maxProperties: 0 },
+		...[reviewEpisodeSchema, reviewPersonSchema].map((schema) => ({
+			...schema,
+			properties: { ...schema.properties, dry_run: dryRun },
+		})),
+	],
 };
 
 export function createMemoryServer(memory: {
@@ -36,8 +38,8 @@ export function createMemoryServer(memory: {
 	scope: MemoryScope;
 	principal: string;
 	database?: string;
+	index: ReviewIndex;
 }) {
-	memory.store.bindScope(memory.scope);
 	const server = new Server(
 		{ name: "Labradorite", version: "0.0.0" },
 		{ capabilities: { tools: {} } },
@@ -89,12 +91,6 @@ export function createMemoryServer(memory: {
 				},
 			},
 			{
-				name: "memory_index",
-				description:
-					"Build pending semantic chunks in bounded batches using the configured embedding endpoint and persistent daily budget. Sends source text and model-proposed episode text to that endpoint. Explicitly invoke after writes or model changes; no automatic background calls. Restart resumes pending chunks. Does not organize or verify memories.",
-				inputSchema: { ...indexSchema, type: "object" as const },
-			},
-			{
 				name: "memory_preview_delete",
 				description:
 					"Read-only preview of the source/correction cascade, episode revisions, dependent profiles and individual reviews. Review counts and IDs before an explicitly authorized deletion. Use preview_token for memory_delete; any intervening write requires another preview.",
@@ -116,7 +112,7 @@ export function createMemoryServer(memory: {
 			{
 				name: "memory_review",
 				description:
-					"Review memory using one proposal. Set dry_run=true to preview without writing; omit it or set false to save directly. With source_ids, save or revise an episode grounded in readable materials. Expressed interpretations require character statements. Include person_review to link a significant person and optionally update their impression atomically. With episodes instead, cite existing episode IDs and revisions to review a person directly. Find candidates with memory_people; create with name and identity or update with id and expected_revision. Omit impression to only link evidence, or supply the complete new judgment. Use snapshot_seq as base_seq and a stable operation_id; reread on conflict.",
+					"Read materials with memory_recall/memory_read first. Submit your own review proposal. A successful save starts semantic indexing in the background. Call with {} to finish without a proposal. Waits up to one second for indexing. If indexing.state is running, check memory_status().retrieval.indexing for progress and the final state. Set dry_run=true to preview without writing; omit it or set false to save directly. With source_ids, save or revise an episode grounded in readable materials. Expressed interpretations require character statements. Include person_review to link a significant person and optionally update their impression atomically. With episodes instead, cite existing episode IDs and revisions to review a person directly. Find candidates with memory_people; create with name and identity or update with id and expected_revision. Omit impression to only link evidence, or supply the complete new judgment. Use snapshot_seq as base_seq and a stable operation_id; reread on conflict.",
 				inputSchema: reviewSchema,
 			},
 			{
@@ -160,6 +156,7 @@ export function createMemoryServer(memory: {
 		],
 	}));
 	server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
+		memory.index.begin();
 		const args = params.arguments ?? {};
 		try {
 			let result: unknown;
@@ -202,9 +199,6 @@ export function createMemoryServer(memory: {
 						args.observed_range_ms,
 					);
 					break;
-				case "memory_index":
-					result = await memory.store.index(memory.scope, args);
-					break;
 				case "memory_preview_delete":
 					result = memory.store.previewDelete(memory.scope, args);
 					break;
@@ -215,6 +209,10 @@ export function createMemoryServer(memory: {
 					result = memory.store.submit(memory.principal, memory.scope, args);
 					break;
 				case "memory_review": {
+					if (Object.keys(args).length === 0) {
+						result = { finished: true, indexing: await memory.index.finishReview() };
+						break;
+					}
 					const { dry_run = false, ...proposal } = args;
 					if (typeof dry_run !== "boolean") throw new MaterialError("VALIDATION_ERROR");
 					const person = Object.hasOwn(proposal, "episodes");
@@ -226,6 +224,7 @@ export function createMemoryServer(memory: {
 						result = person
 							? memory.store.reviewPerson(memory.principal, memory.scope, proposal)
 							: memory.store.reviewEpisode(memory.principal, memory.scope, proposal);
+						void memory.index.run();
 					}
 					break;
 				}
@@ -288,6 +287,8 @@ export function createMemoryServer(memory: {
 				],
 				isError: true,
 			};
+		} finally {
+			memory.index.end();
 		}
 	});
 	return server;

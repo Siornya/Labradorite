@@ -35,7 +35,6 @@ test("model submits and reads original material through stdio MCP", async () => 
 			"memory_read",
 			"memory_review",
 			"memory_delete",
-			"memory_index",
 		])
 			assert.ok(tools.has(name), `Missing MCP tool: ${name}`);
 		for (const name of [

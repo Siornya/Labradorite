@@ -135,6 +135,6 @@ export async function configureEmbedding(runtime: RuntimeConfig, args: Options) 
 	console.info(
 		"Embedding 已验证，向量维度 " +
 			runtime.embedding.dimensions +
-			"。加载 MCP 后调用 memory_index 建立索引。",
+			"。MCP 服务会在回顾完成或空闲时自动建立索引。",
 	);
 }

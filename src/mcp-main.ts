@@ -1,3 +1,4 @@
+import { ReviewIndex } from "./retrieval/review-index.js";
 import { fork, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { EmbeddingProvider } from "./providers/embedding.js";
@@ -17,8 +18,14 @@ function getProvider(config: RuntimeConfig) {
 	return providers.get(key);
 }
 let store: MaterialStore | undefined;
+let index: ReviewIndex | undefined;
+let closingStore: Promise<void> | undefined;
 function closeStore() {
+	return (closingStore ??= shutdown());
+}
+async function shutdown() {
 	stopped = true;
+	await index?.close();
 	for (const provider of providers.values()) provider?.close?.();
 	providers.clear();
 	if (viewer?.connected) viewer.disconnect();
@@ -35,9 +42,13 @@ try {
 	const runtime = paths[0]!;
 	const config = loadRuntimeConfig(runtime);
 	store = new MaterialStore(config.database, undefined, getProvider(config));
+	const scope = { space: config.space, character: config.character, world: config.world };
+	store.bindScope(scope);
+	index = new ReviewIndex(store, scope, !!config.embedding, config.index_idle_minutes);
 	const server = createMemoryServer({
+		index,
 		store,
-		scope: { space: config.space, character: config.character, world: config.world },
+		scope,
 		principal: "local-client",
 		database: config.database,
 	});
@@ -47,11 +58,11 @@ try {
 			try {
 				await server.close();
 			} finally {
-				closeStore();
+				await closeStore();
 			}
 		})());
 	server.onclose = () => {
-		closeStore();
+		void closeStore();
 	};
 	for (const signal of ["SIGINT", "SIGTERM"] as const)
 		process.once(signal, () => {
@@ -87,7 +98,7 @@ try {
 		});
 	}
 } catch {
-	closeStore();
+	await closeStore();
 	console.error("Unable to start memory MCP: check configuration, database path and scope.");
 	process.exitCode = 1;
 }

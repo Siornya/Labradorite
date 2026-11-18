@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import assert from "node:assert/strict";
-import { test } from "vite-plus/test";
+import { test, vi } from "vite-plus/test";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { createInterface } from "node:readline";
@@ -14,6 +14,10 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 test("stdio MCP indexes through compatible HTTP embeddings and returns source-backed semantic recall", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "hybrid-mcp-"));
 	const inputs: string[][] = [];
+	let releaseFirstBatch!: () => void;
+	const firstBatch = new Promise<void>((resolve) => {
+		releaseFirstBatch = resolve;
+	});
 	const endpoint = createServer(async (req, res) => {
 		const chunks: Buffer[] = [];
 		for await (const chunk of req) chunks.push(Buffer.from(chunk));
@@ -23,6 +27,7 @@ test("stdio MCP indexes through compatible HTTP embeddings and returns source-ba
 			dimensions: number;
 		};
 		inputs.push(body.input);
+		if (inputs.length === 1) await firstBatch;
 		if (
 			req.method !== "POST" ||
 			req.url !== "/v1/embeddings" ||
@@ -64,7 +69,7 @@ test("stdio MCP indexes through compatible HTTP embeddings and returns source-ba
 					dimensions: 2,
 					request_dimensions: true,
 					max_requests_per_day: 10,
-					timeout_ms: 2000,
+					timeout_ms: 10000,
 				},
 			}),
 		);
@@ -99,8 +104,17 @@ test("stdio MCP indexes through compatible HTTP embeddings and returns source-ba
 			coverage: "synthetic activity",
 		});
 		assert.equal(inputs.length, 0);
-		const index = await call("memory_index", { max_batches: 1 });
-		assert.equal(index.indexed_chunks, 1, JSON.stringify({ index, inputs }));
+		const { indexing } = await call("memory_review", {});
+		assert.equal(indexing.state, "running");
+		const inProgress = (await call("memory_status", {})).retrieval;
+		assert.equal(inProgress.indexing.state, "running");
+		assert.equal(inProgress.pending_chunks, 1);
+		releaseFirstBatch();
+		await vi.waitFor(async () => {
+			const status = (await call("memory_status", {})).retrieval;
+			assert.equal(status.indexing.state, "completed");
+			assert.equal(status.pending_chunks, 0);
+		});
 		assert.deepEqual(inputs[0], [receipt.material.text]);
 		const recall = await call("memory_recall", { query: "脚踏出游" });
 		assert.equal(recall.items[0].id, receipt.material.id);
@@ -157,7 +171,44 @@ test("stdio MCP indexes through compatible HTTP embeddings and returns source-ba
 		assert.equal((await call("memory_status", {})).retrieval.chunks, 0);
 		assert.deepEqual((await call("memory_recall", { query: "脚踏出游" })).items, []);
 		assert.equal(inputs.length, 3);
+		const fresh = (
+			await call("memory_submit", {
+				operation_id: "later",
+				text: "再次骑车",
+				source_kind: "activity_report",
+				speaker: "reader",
+				coverage: "ride",
+			})
+		).material;
+		const status = await call("memory_status", {});
+		const proposal = {
+			operation_id: "ride",
+			base_seq: status.snapshot_seq,
+			title: "骑车",
+			summary: "再次骑车",
+			source_ids: [fresh.id],
+			beats: [{ text: "出发", source_ids: [fresh.id] }],
+			interpretations: [],
+			thread: null,
+			activity_state: "completed",
+			unknowns: [],
+		};
+		await call("memory_review", { ...proposal, dry_run: true });
+		assert.equal(inputs.length, 3);
+		await call("memory_review", proposal);
+		await vi.waitFor(async () =>
+			assert.equal((await call("memory_status", {})).retrieval.pending_chunks, 0),
+		);
+		assert.equal(inputs.length, 4);
+		const finish = await client.callTool({ name: "memory_review" });
+		assert.equal(finish.isError, false);
+		assert.equal(
+			JSON.parse((finish.content as { text: string }[])[0]!.text).indexing.state,
+			"completed",
+		);
+		assert.equal(inputs.length, 4);
 	} finally {
+		releaseFirstBatch();
 		await client.close();
 		endpoint.closeAllConnections();
 		await new Promise<void>((resolve) => endpoint.close(() => resolve()));

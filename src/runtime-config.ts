@@ -4,6 +4,7 @@ import { isAbsolute } from "node:path";
 
 export interface RuntimeConfig {
 	database: string;
+	index_idle_minutes?: number;
 	embedding?: EmbeddingConfig;
 	local_model?: { file: string; sha256: string };
 	space: string;
@@ -21,14 +22,26 @@ export function loadRuntimeConfig(path: string): RuntimeConfig {
 	if (
 		Object.keys(config).some(
 			(key) =>
-				!["database", "space", "character", "world", "embedding", "local_model"].includes(
-					key,
-				),
+				![
+					"database",
+					"space",
+					"character",
+					"world",
+					"embedding",
+					"local_model",
+					"index_idle_minutes",
+				].includes(key),
 		)
 	)
 		throw new Error(
 			"Unknown runtime configuration field. Regenerate the configuration for stdio MCP.",
 		);
+	const idle = config.index_idle_minutes;
+	if (
+		idle !== undefined &&
+		(typeof idle !== "number" || !Number.isSafeInteger(idle) || idle < 1 || idle > 35791)
+	)
+		throw new Error("index_idle_minutes must be an integer between 1 and 35791 minutes.");
 	if (!isAbsolute(config.database as string)) throw new Error("Database path must be absolute.");
 	for (const key of ["space", "character", "world"]) {
 		if (!/^[A-Za-z0-9_-]{1,128}$/.test(config[key] as string))

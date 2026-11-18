@@ -23,7 +23,7 @@ vpr setup
 完成后将 MCP 配置添加到 MCP 客户端：
 
 1. 按 setup 输出的路径打开 `mcp.json`，将其中的 `Labradorite` 条目复制到 MCP 客户端配置中，然后重新加载客户端。
-2. 让 AI 调用 `memory_status` 确认已连接。如果启用了语义检索且已有记忆，让 AI 调用 `memory_index` 分批建立索引，直到 `pending_chunks` 为 0。
+2. 让 AI 调用 `memory_status` 确认已连接。启用语义检索后，服务会在回顾保存成功或空闲时自动建立索引。
 
 使用 AI 协助配置、自选数据目录或使用非交互方式部署，请查看[配置说明](docs/setup.md)
 
@@ -48,11 +48,23 @@ vpr viewer:url
 | 保存与展开 | `memory_submit`、`memory_read`                            | 保存原文、来源及覆盖范围，按 ID 展开。原始记录有误时可提交更正并关联旧材料。 |
 | 整理与修订 | `memory_review`、`memory_amend`                           | 把材料组织为有来源依据的经历，预览差异，保留历次修订。                       |
 | 人物档案   | `memory_people`、`memory_review`、`memory_read`           | 按姓名或身份线索查找人物，查看当前印象、形成时间和依据的经历版本。           |
-| 查找记忆   | `memory_recall`、`memory_index`                           | 返回简短片段、命中原因和来源 ID，可按时间、渠道或生活线筛选。                |
+| 查找记忆   | `memory_recall`                                           | 返回简短片段、命中原因和来源 ID，可按时间、渠道或生活线筛选。                |
 | 管理相册   | `memory_import_media`、`memory_album`                     | 从入口目录归档照片和受支持的 MP4，按当前空间与世界浏览。                     |
 | 检查与删除 | `memory_status`、`memory_preview_delete`、`memory_delete` | 查看整理进度；删除前先查看受影响的材料、更正链和经历修订。                   |
 
-启用语义检索后，调用 `memory_index` 分批建立向量索引，直到 `pending_chunks` 为 0。建索引会把材料片段发送到所配置的服务，混合检索也可能发送查询文本。仅全文检索和内置 llama.cpp 都在本机处理记忆。[配置示例和每日请求预算](docs/setup.md#embedding-配置与请求预算)
+启用语义检索后，可在项目目录运行以下命令，将路径替换为 setup 输出的运行配置路径：
+
+```sh
+vp run index "/path/to/runtime.json"
+```
+
+命令逐批处理至没有待索引片段，显示已完成数量、覆盖率及 UTC 当日请求用量。Ctrl+C 会等待当前批次结束并保存，然后停止；再次运行同一命令会跳过已完成片段。网络失败或额度耗尽时停止并说明原因，不自动重试。新增材料、修订经历或切换模型后，再次运行即可处理待索引内容。强制关闭进程后最多等待 30 秒再运行；CLI 与 MCP 不会同时处理同一作用域、同一模型的索引任务。
+
+模型先用 `memory_recall`、`memory_read` 读取材料，然后用 `memory_review` 提交整理结果。保存成功后，后台会处理待索引片段。没有新经历要写时，调用 `memory_review({})` 即可结束回顾。最多等待索引 1 秒，仍在运行时返回 `indexing.state: "running"`。索引会在后台继续，可通过 `memory_status` 查看进度和结果。
+
+服务启动或最近一次 MCP 工具调用结束后，连续空闲 **120 分钟**也会自动索引。可通过运行配置的 `index_idle_minutes` 调整空闲时长。
+
+建索引会把材料片段发送到所配置的服务，混合检索也可能发送查询文本。仅全文检索和内置 llama.cpp 都在本机处理记忆。[配置示例和每日请求预算](docs/setup.md#embedding-配置与请求预算)
 
 整理经历时，上层 AI 可以为经常出现或对角色有重要意义的人建档。先用 `memory_people` 检查姓名和身份线索。调用 `memory_review` 时，用 `source_ids` 引用原始材料，加上 `person_review` 即可在保存经历的同时建立或更新档案。只关联经历时省略 `impression`。如果新认识也依据更早的经历，在 `other_episodes` 中列出相应 ID 和版本。
 

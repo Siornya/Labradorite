@@ -17,6 +17,7 @@
 		"mcp": "node dist/src/mcp-main.js",
 		"viewer:url": "vpx scripts/viewer-url.js",
 		"library": "vpx scripts/library.ts",
+		"index": "vpx scripts/index.ts",
 		"setup": "vpx scripts/setup.ts",
 		"prepare": "vp config"
 	},

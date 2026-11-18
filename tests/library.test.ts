@@ -133,7 +133,14 @@ test("MCP album, Markdown export and restored instance retain the original media
 			const ticket = await fetch(login, { redirect: "manual" });
 			const cookie = ticket.headers.get("set-cookie")!.split(";")[0]!;
 			const chooser = await fetch(new URL("/choose", login), { headers: { cookie } });
-			assert.ok((await chooser.text()).includes("打开当前记忆库"));
+			const entry = await chooser.text();
+			const stylesheet = /<link rel="stylesheet" href="([^"]+)"/.exec(entry);
+			assert.ok(stylesheet);
+			const css = await fetch(new URL(stylesheet[1]!, login), { headers: { cookie } });
+			assert.equal(css.status, 200);
+			assert.match(css.headers.get("content-type") ?? "", /^text\/css/);
+			assert.equal(await css.text(), readFileSync(resolve("src/viewer.css"), "utf8"));
+			assert.ok(entry.includes("打开当前记忆库"));
 			const select = await fetch(new URL("/select?current=1", login), {
 				method: "POST",
 				headers: { cookie, origin: login.origin },

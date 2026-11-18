@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
-import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
+import { createReadStream, readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { loadRuntimeConfig } from "./runtime-config.js";
 import { defaultDataDirectory } from "./data-directory.js";
@@ -58,8 +58,7 @@ function layout(tab: Tab | null, content: string) {
 				`<a ${key === tab ? 'aria-current="page"' : ""} href="/?tab=${key}">${label}</a>`,
 		)
 		.join("");
-	return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Labradorite · 记忆库</title><style>
-*{box-sizing:border-box}body{margin:0;background:#f6f5f0;color:#233632;font:16px/1.65 "Source Sans 3","Microsoft YaHei",sans-serif}header{background:#153d39;color:#faf6e9;padding:16px max(5vw,24px);display:flex;align-items:center;gap:32px;flex-wrap:wrap}strong,h1,h2{font-family:"DM Serif Text","Songti SC",serif}header strong{font-size:24px}nav{display:flex;gap:20px}a{color:#20665e}nav a{color:inherit;text-decoration:none}nav a[aria-current]{border-bottom:2px solid #d4b879}main{max-width:1024px;margin:32px auto;padding:0 24px 48px}h1{font-size:32px}h2{font-size:20px}article,section{border-bottom:1px solid #cad3ca;padding:15px 0}small{color:#51635d}.grid{display:grid;gap:20px;grid-template-columns:repeat(auto-fit,minmax(min(225px,100%),1fr))}.grid img{width:100%;height:180px;object-fit:cover}.grid article{min-width:0}img,video{display:block;max-width:100%;max-height:65vh}p,h1,h2,a{overflow-wrap:anywhere}p{white-space:pre-wrap}form{display:flex;gap:8px}form{flex-wrap:wrap}input,button,select{font:inherit;padding:6px 12px;border:1px solid #849b90;border-radius:4px}input{max-width:75%}button{background:#205249;color:white;cursor:pointer}</style><header><strong>Labradorite</strong><nav>${tab ? tabs + ' <a href="/choose">切换记忆库</a>' : ""}</nav></header><main>${managed ? "" : `<p role="status">${standaloneNotice}</p>`}${searchForm}${content}</main></html>`;
+	return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Labradorite · 记忆库</title><link rel="stylesheet" href="/viewer.css"><header><strong>Labradorite</strong><nav>${tab ? tabs + ' <a href="/choose">切换记忆库</a>' : ""}</nav></header><main>${managed ? "" : `<p role="status">${standaloneNotice}</p>`}${searchForm}${content}</main></html>`;
 }
 function openLibrary(path: string) {
 	const config = loadRuntimeConfig(path);
@@ -298,10 +297,11 @@ function picker(requested: string, error = "") {
 	}
 	return layout(
 		null,
-		`<h1>打开记忆库</h1><form action="/select?current=1" method="post"><button>打开当前记忆库</button></form><details ${error || requested !== startingFolder ? "open" : ""}><summary>选择其他目录</summary><p>选择运行查看器的机器上包含 runtime.json 的文件夹。</p><form action="/choose"><input style="flex:1" name="dir" aria-label="目录路径" value="${escape(requested)}"><button>浏览</button></form>${error ? "<p role=alert>" + escape(error) + "</p>" : ""}${listing}</details>`,
+		`<h1>打开记忆库</h1><form action="/select?current=1" method="post"><button>打开当前记忆库</button></form><details ${error || requested !== startingFolder ? "open" : ""}><summary>选择其他目录</summary><p>选择运行查看器的机器上包含 runtime.json 的文件夹。</p><form action="/choose"><input class="directory-path" name="dir" aria-label="目录路径" value="${escape(requested)}"><button>浏览</button></form>${error ? "<p role=alert>" + escape(error) + "</p>" : ""}${listing}</details>`,
 	);
 }
 type Session = { library?: ReturnType<typeof openLibrary> };
+const stylesheet = readFileSync(new URL("./viewer.css", import.meta.url));
 const sessions = new Map<string, Session>();
 const secret = randomBytes(24).toString("hex");
 const cookie = "viewer_" + secret.slice(0, 8);
@@ -316,7 +316,7 @@ const server = createServer(async (req, res) => {
 	res.setHeader("Referrer-Policy", "no-referrer");
 	res.setHeader(
 		"Content-Security-Policy",
-		"default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; media-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+		"default-src 'none'; style-src 'self'; img-src 'self'; media-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
 	);
 	try {
 		if (!/^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(req.headers.host ?? "")) return fail(403);
@@ -351,6 +351,11 @@ const server = createServer(async (req, res) => {
 		}
 		const session = token ? sessions.get(token) : undefined;
 		if (!session) return fail(403);
+		if (req.method === "GET" && url.pathname === "/viewer.css") {
+			res.writeHead(200, { "content-type": "text/css; charset=utf-8" });
+			res.end(stylesheet);
+			return;
+		}
 		if (req.method === "POST" && url.pathname === "/select") {
 			if (req.headers.origin !== "http://" + req.headers.host) return fail(403);
 			const dir = url.searchParams.get("dir") ?? "";

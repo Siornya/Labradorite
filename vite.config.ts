@@ -13,6 +13,7 @@ export default defineConfig({
 		format: "esm",
 		outExtensions: () => ({ js: ".js" }),
 		outDir: "dist",
+		copy: [{ from: "src/viewer.css", to: "dist/src" }],
 		clean: true,
 		dts: false,
 		sourcemap: true,

@@ -69,7 +69,7 @@ function openLibrary(path: string) {
 	const db = new DatabaseSync(config.database, { readOnly: true });
 	const version = db.prepare("PRAGMA user_version").get()?.user_version;
 	try {
-		if (version !== 3 && version !== 4) throw new Error("Unsupported schema");
+		if (version !== 4) throw new Error("Unsupported schema");
 		db.prepare("SELECT m.body" + materialFrom + " LIMIT 1");
 		db.prepare("SELECT e.body" + episodeFrom + " LIMIT 1");
 	} catch (error) {
@@ -131,10 +131,7 @@ function openLibrary(path: string) {
 	function listing(url: URL, tab: Tab) {
 		const q = (url.searchParams.get("q") ?? "").slice(0, 512);
 		if (tab === "people") {
-			const page =
-				version === 4
-					? findPeople(db, config, q, url.searchParams.get("after") ?? "")
-					: { items: [], next: null };
+			const page = findPeople(db, config, q, url.searchParams.get("after") ?? "");
 			const cards = page.items.map(personCard).join("");
 			const next = page.next
 				? `<a href="/?tab=people&amp;q=${encodeURIComponent(q)}&amp;after=${encodeURIComponent(page.next)}">下一页</a>`
@@ -251,7 +248,7 @@ function openLibrary(path: string) {
 		return `<article><h2><a href="/person/${encodeURIComponent(person.id)}">${escape(person.name)}</a></h2><p>${escape(person.identity)}</p></article>`;
 	}
 	function personDetail(id: string) {
-		const person = version === 4 ? readPerson(db, config, id) : undefined;
+		const person = readPerson(db, config, id);
 		if (!person) return;
 		const history = person.history
 			.toReversed()
@@ -283,8 +280,7 @@ function openLibrary(path: string) {
 			excerpt?: string;
 			stale: boolean;
 		}[];
-		const people =
-			version === 4 ? findPeople(db, config, query).items.map(personCard).join("") : "";
+		const people = findPeople(db, config, query).items.map(personCard).join("");
 		const cards =
 			people +
 			rows

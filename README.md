@@ -70,7 +70,7 @@ vp run index "/path/to/runtime.json"
 
 整理经历时，上层 AI 可以为经常出现或对角色有重要意义的人建档。先用 `memory_people` 检查姓名和身份线索。调用 `memory_review` 时，用 `source_ids` 引用原始材料，加上 `person_review` 即可在保存经历的同时建立或更新档案。只关联经历时省略 `impression`。如果新认识也依据更早的经历，在 `other_episodes` 中列出相应 ID 和版本。
 
-空闲回顾时，上层 AI 可以用同一个 `memory_review`，通过 `episodes` 引用已存经历的 ID 和版本，写下完整的当前印象。例如“讨论复杂方案时，小林倾向先看草稿”。两种用法都默认直接保存。需要先预览时，加上 `dry_run: true` 即可。浏览器的“人物档案”和 `memory_read` 的 `kind: "person"` 都能查看历次判断，追溯到每次判断所依据的经历版本。更新服务首次打开 v2 或 v3 记忆库时会自动升级，保留已有材料和经历修订。
+空闲回顾时，上层 AI 可以用同一个 `memory_review`，通过 `episodes` 引用已存经历的 ID 和版本，写下完整的当前印象。例如“讨论复杂方案时，小林倾向先看草稿”。两种用法都默认直接保存。需要先预览时，加上 `dry_run: true` 即可。浏览器的“人物档案”和 `memory_read` 的 `kind: "person"` 都能查看历次判断，追溯到每次判断所依据的经历版本。
 
 工具字段、检索返回值和媒体导入示例见[工具参考](docs/tools.md)。
 

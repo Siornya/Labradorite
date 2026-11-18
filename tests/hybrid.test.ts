@@ -290,82 +290,67 @@ test("deletion while embedding a query is awaiting network is rechecked before r
 	}
 });
 
-test.each([2, 3, 4])(
-	"v%i migration preserves materials, episode history, tombstones and retrieval",
-	(version) => {
-		const dir = mkdtempSync(join(tmpdir(), "rag-migrate-"));
-		const path = join(dir, "memory.db");
-		let store = new MaterialStore(path);
-		const live = store.submit("client", scope, material("live", "杭州脚踏出游")).material;
-		const gone = store.submit("client", scope, material("gone", "秘密")).material;
-		const first = store.reviewEpisode("client", scope, episode(store, [live.id])).episode;
-		store.reviewEpisode("client", scope, {
-			...episode(store, [live.id], "最新观点", "new"),
-			id: first.id,
-			expected_revision: 1,
-		});
-		erase(store, gone.id);
-		const seq = store.sequence(scope);
+test("v4 reopen preserves materials, episode history, tombstones and retrieval", () => {
+	const dir = mkdtempSync(join(tmpdir(), "rag-migrate-"));
+	const path = join(dir, "memory.db");
+	let store = new MaterialStore(path);
+	const live = store.submit("client", scope, material("live", "杭州脚踏出游")).material;
+	const gone = store.submit("client", scope, material("gone", "秘密")).material;
+	const first = store.reviewEpisode("client", scope, episode(store, [live.id])).episode;
+	store.reviewEpisode("client", scope, {
+		...episode(store, [live.id], "最新观点", "new"),
+		id: first.id,
+		expected_revision: 1,
+	});
+	erase(store, gone.id);
+	const seq = store.sequence(scope);
+	store.close();
+	const db = new Database(path);
+	const authority = () =>
+		[
+			"metadata",
+			"spaces",
+			"materials",
+			"operations",
+			"episodes",
+			"episode_sources",
+			"memory_operations",
+			"tombstones",
+		].map((table) =>
+			db
+				.prepare(
+					`SELECT * FROM ${table}${table === "metadata" ? " WHERE key!='search_version'" : ""} ORDER BY rowid`,
+				)
+				.all()
+				.map((row) =>
+					table === "materials"
+						? {
+								...(row as { body: string }),
+								body: JSON.parse((row as { body: string }).body),
+							}
+						: row,
+				),
+		);
+	try {
+		const before = authority();
+		store = new MaterialStore(path);
+		assert.equal(db.pragma("user_version", { simple: true }), 4);
+		assert.deepEqual(authority(), before);
+		assert.equal(store.sequence(scope), seq);
+		assert.deepEqual(store.read(scope, live.id).text, live.text);
+		assert.equal(store.read(scope, live.id).review_status, "reviewed");
+		assert.equal(
+			store.submit("client", scope, material("live", "杭州脚踏出游")).replayed,
+			true,
+		);
+		assert.throws(() => store.read(scope, gone.id), { message: "NOT_FOUND" });
+		assert.equal(store.status(scope).retrieval.chunks, 2);
+		assert.equal(store.history(scope, first.id).length, 2);
+		assert.deepEqual(ids(store.recall(scope, { query: "秘密" })), []);
+		assert.ok(ids(store.recall(scope, { query: "杭州" })).includes(live.id));
+	} finally {
 		store.close();
-		const db = new Database(path);
-		const authority = () =>
-			[
-				"metadata",
-				"spaces",
-				"materials",
-				"operations",
-				"episodes",
-				"episode_sources",
-				"memory_operations",
-				"tombstones",
-			].map((table) =>
-				db
-					.prepare(
-						`SELECT * FROM ${table}${table === "metadata" ? " WHERE key!='search_version'" : ""} ORDER BY rowid`,
-					)
-					.all()
-					.map((row) =>
-						table === "materials"
-							? {
-									...(row as { body: string }),
-									body: JSON.parse((row as { body: string }).body),
-								}
-							: row,
-					),
-			);
-		try {
-			if (version < 4)
-				db.exec(
-					"DROP TABLE person_evidence; DROP TABLE person_reviews; DROP TABLE people;",
-				);
-			if (version === 2)
-				db.exec(
-					"DROP TRIGGER search_chunk_deleted; DROP TABLE search_vectors; DROP TABLE search_chunks; DROP TABLE search_fts; DROP TABLE embedding_usage; DELETE FROM metadata WHERE key='search_version';",
-				);
-			db.pragma("user_version = " + version);
-			const before = authority();
-			db.exec(`DELETE FROM metadata WHERE key='review_status_format';
-				UPDATE materials SET body=json_set(json_remove(body,'$.review_status'),'$.organization_status','pending')
-				WHERE json_type(body,'$.review_status') IS NOT NULL;`);
-			store = new MaterialStore(path);
-			assert.equal(db.pragma("user_version", { simple: true }), 4);
-			assert.deepEqual(authority(), before);
-			assert.equal(store.sequence(scope), seq);
-			assert.deepEqual(store.read(scope, live.id).text, live.text);
-			assert.equal(store.read(scope, live.id).review_status, "reviewed");
-			assert.equal(
-				store.submit("client", scope, material("live", "杭州脚踏出游")).replayed,
-				true,
-			);
-			assert.throws(() => store.read(scope, gone.id), { message: "NOT_FOUND" });
-			assert.equal(store.status(scope).retrieval.chunks, 2);
-			assert.equal(store.history(scope, first.id).length, 2);
-			assert.deepEqual(ids(store.recall(scope, { query: "秘密" })), []);
-			assert.ok(ids(store.recall(scope, { query: "杭州" })).includes(live.id));
-		} finally {
-			store.close();
-			db.close();
-			rmSync(dir, { recursive: true, force: true });
-		}
-	},
-);
+		db.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});

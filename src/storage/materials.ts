@@ -123,10 +123,9 @@ export class MaterialStore {
 		this.#search = new SearchIndex(this.#db, clock, provider);
 		try {
 			const version = this.#db.pragma("user_version", { simple: true });
-			if (access !== "service" && version !== 3 && version !== 4)
-				throw new Error("Search requires a v3 or v4 database.");
-			if (version !== 0 && version !== 2 && version !== 3 && version !== 4)
-				throw new Error("Unsupported database schema.");
+			if (access !== "service" && version !== 4)
+				throw new Error("Search requires a v4 database.");
+			if (version !== 0 && version !== 4) throw new Error("Unsupported database schema.");
 			if (
 				version === 0 &&
 				this.#db
@@ -151,42 +150,16 @@ export class MaterialStore {
 					CREATE TABLE episode_sources (episode TEXT NOT NULL, revision INTEGER NOT NULL, source TEXT NOT NULL, PRIMARY KEY(episode,revision,source));
 					CREATE TABLE memory_operations (principal TEXT NOT NULL, space TEXT NOT NULL, operation TEXT NOT NULL, digest TEXT NOT NULL, kind TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(principal,space,operation));
 					CREATE TABLE tombstones (id TEXT PRIMARY KEY, space TEXT NOT NULL, world TEXT NOT NULL);
-					PRAGMA user_version = 2;`);
+					PRAGMA user_version = 4;`);
+						this.#search.initialize();
+						this.#db.exec(profileSchema);
 						this.#db
 							.prepare("INSERT INTO metadata VALUES ('digest_key', ?)")
 							.run(randomBytes(32).toString("hex"));
 					})
 					.immediate();
 			}
-			if (version === 0 || version === 2)
-				this.#db
-					.transaction(() => {
-						this.#search.initialize();
-						this.#db.pragma("user_version = 3");
-					})
-					.immediate();
 			this.#search.verify();
-			if (access === "service" && version !== 4)
-				this.#db
-					.transaction(() => {
-						if (this.#db.pragma("user_version", { simple: true }) === 4) return;
-						this.#db.exec(profileSchema);
-						this.#db.pragma("user_version = 4");
-					})
-					.immediate();
-			if (
-				access === "service" &&
-				!this.#db.prepare("SELECT 1 FROM metadata WHERE key='review_status_format'").get()
-			) {
-				this.#db
-					.transaction(() => {
-						this.#db
-							.exec(`UPDATE materials SET body=json_set(json_remove(body,'$.organization_status'),'$.review_status','pending')
-						WHERE json_type(body,'$.organization_status') IS NOT NULL;
-						INSERT OR IGNORE INTO metadata VALUES ('review_status_format','1');`);
-					})
-					.immediate();
-			}
 			this.#key = (
 				this.#db.prepare("SELECT value FROM metadata WHERE key='digest_key'").get() as {
 					value: string;
@@ -319,9 +292,7 @@ export class MaterialStore {
 			)
 			.get(id, scope.space, scope.world, scope.character) as { body: string } | undefined;
 		if (!row) throw new MaterialError("NOT_FOUND");
-		const material = JSON.parse(row.body) as Material & { organization_status?: string };
-		// Read-only connections can open libraries before the service migrates them.
-		delete material.organization_status;
+		const material = JSON.parse(row.body) as Material;
 		return {
 			...material,
 			review_status: this.#reviewed(id) ? "reviewed" : "pending",

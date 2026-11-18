@@ -23,7 +23,7 @@ test("unknown schemas and unrelated databases are not migrated or populated", ()
 		inspection.exec(
 			"CREATE TABLE unrelated(value TEXT); INSERT INTO unrelated VALUES ('keep');",
 		);
-		for (const version of [1, 99]) {
+		for (const version of [1, 2, 3, 99]) {
 			inspection.pragma("user_version=" + version);
 			assert.throws(() => new MaterialStore(path), /Unsupported database schema/);
 			assert.equal(inspection.pragma("user_version", { simple: true }), version);

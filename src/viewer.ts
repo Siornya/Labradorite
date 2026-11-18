@@ -1,3 +1,4 @@
+import { libraryMatches, settingsPage } from "./viewer-settings.js";
 import sharp from "sharp";
 import { registerViewer } from "./viewer-registry.js";
 import { createSearchClient, searchLibrary as searchLocalLibrary } from "./viewer-search.js";
@@ -12,6 +13,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { loadRuntimeConfig } from "./runtime-config.js";
 import { defaultDataDirectory } from "./data-directory.js";
 import type { Material, Episode } from "./storage/materials.js";
+import { indexReason, readIndexStatus } from "./retrieval/index-status.js";
 
 const args = process.argv.slice(2);
 if (args.includes("--help")) {
@@ -48,16 +50,18 @@ const escape = (value: string) =>
 	);
 const names = { episodes: "经历", people: "人物档案", album: "相册", materials: "材料" };
 type Tab = keyof typeof names;
-function layout(tab: Tab | null, content: string) {
+function layout(tab: Tab | "index" | "settings" | null, content: string) {
 	const searchForm = tab
 		? `<form action="/search"><input type="search" name="q" aria-label="搜索整个记忆库" maxlength="512" placeholder="搜索经历、人物、材料和相册" required><select name="mode" aria-label="检索方式">${managed ? '<option value="hybrid">混合检索</option>' : ""}<option value="lexical">仅本地全文</option></select><button>全库搜索</button></form>`
 		: "";
-	const tabs = Object.entries(names)
-		.map(
-			([key, label]) =>
-				`<a ${key === tab ? 'aria-current="page"' : ""} href="/?tab=${key}">${label}</a>`,
-		)
-		.join("");
+	const tabs =
+		Object.entries(names)
+			.map(
+				([key, label]) =>
+					`<a ${key === tab ? 'aria-current="page"' : ""} href="/?tab=${key}">${label}</a>`,
+			)
+			.join("") +
+		`<a href="/index-status" ${tab === "index" ? 'aria-current="page"' : ""}>索引状态</a><a href="/settings" ${tab === "settings" ? 'aria-current="page"' : ""}>设置</a>`;
 	return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Labradorite · 记忆库</title><link rel="stylesheet" href="/viewer.css"><header><strong>Labradorite</strong><nav>${tab ? tabs + ' <a href="/choose">切换记忆库</a>' : ""}</nav></header><main>${managed ? "" : `<p role="status">${standaloneNotice}</p>`}${searchForm}${content}</main></html>`;
 }
 function openLibrary(path: string) {
@@ -73,6 +77,51 @@ function openLibrary(path: string) {
 		throw error;
 	}
 	const scope = [config.space, config.world, config.character];
+	function indexStatus() {
+		let current: typeof config;
+		try {
+			current = loadRuntimeConfig(path);
+		} catch {
+			return layout(
+				"index",
+				'<h1>索引状态</h1><p>无法读取运行配置，请检查 runtime.json 后<a href="/index-status">刷新状态</a>。</p>',
+			);
+		}
+		if (!libraryMatches(current, config)) {
+			return layout(
+				"index",
+				'<h1>索引状态</h1><p>运行配置指向的记忆库或作用域已更改，请<a href="/choose">重新选择记忆库</a>。</p>',
+			);
+		}
+		const status = readIndexStatus(current);
+		const percent = status.chunks
+			? Math.floor((status.embedded_chunks / status.chunks) * 100)
+			: 100;
+		const states = {
+			running: "正在建立索引",
+			completed: "已完成",
+			paused: "本次分批调用已结束",
+			stopped: "已停止",
+			cancelled: "已取消",
+			interrupted: "意外中断",
+		};
+		const job = status.indexing;
+		const content = !status.semantic_enabled
+			? `<p>${indexReason("EMBEDDING_DISABLED")} 全文检索仍然可用。</p>`
+			: `<p>当前模型：${escape(current.embedding!.model)}</p>
+			<p>语义索引覆盖率：${percent}% · 已索引 ${status.embedded_chunks} / ${status.chunks} 个片段，待处理 ${status.pending_chunks} 个。</p>
+			<progress aria-label="语义索引覆盖率" max="${Math.max(1, status.chunks)}" value="${status.chunks ? status.embedded_chunks : 1}"></progress>
+			${status.chunks === 0 ? "<p>记忆库暂无可索引内容。</p>" : status.pending_chunks ? "<p>未索引内容仍可通过全文检索查找；语义检索尚未覆盖全部内容。</p>" : "<p>当前内容已全部建立语义索引。</p>"}
+			<p>UTC 今日请求：${status.usage.requests} / ${status.max_requests_per_day}（整个数据库共享）。</p>
+			<p>最近任务：${job ? states[job.state] : "尚未运行"}${job ? ` · 更新时间（UTC）：${escape(job.updated_at)}` : ""}</p>
+			${job?.reason ? `<p role="status">${indexReason(job.reason)}</p>` : ""}
+			<p>在项目目录运行以下命令可继续建立索引。Ctrl+C 会在当前批次结束后停止，已完成进度会保留。</p>
+			<pre><code>${escape(`vp run index "${resolve(path)}"`)}</code></pre>`;
+		return layout(
+			"index",
+			`<h1>索引状态</h1>${content}<p><a href="/index-status">刷新状态</a></p><p>此页只读取状态，不会发起 embedding 请求。</p>`,
+		);
+	}
 	function material(id: string): Material | undefined {
 		const row = db.prepare("SELECT m.body" + materialFrom + " AND m.id=?").get(...scope, id) as
 			| Row
@@ -247,10 +296,12 @@ function openLibrary(path: string) {
 				.join("");
 		return layout(
 			"episodes",
-			`<h1>搜索结果</h1><p>${escape(query)} · ${result.diagnostics.semantic.used ? "混合检索" : "全文检索"}</p>${cards || "<p>没有匹配的记录。</p>"}`,
+			`<h1>搜索结果</h1><p>${escape(query)} · ${result.diagnostics.semantic.used ? "混合检索" : "全文检索"}</p>${result.diagnostics.semantic.reason && result.diagnostics.semantic.reason !== "SYNC_LEXICAL_ONLY" ? `<p role="status">${indexReason(result.diagnostics.semantic.reason)} <a href="/index-status">查看索引状态</a></p>` : ""}${result.diagnostics.semantic.used && result.diagnostics.semantic.pending_chunks ? `<p>语义索引尚有 ${result.diagnostics.semantic.pending_chunks} 个片段待处理。<a href="/index-status">查看索引状态</a></p>` : ""}${cards || "<p>没有匹配的记录。</p>"}`,
 		);
 	}
 	return {
+		settings: (form?: URLSearchParams) => settingsPage(path, config, form),
+		indexStatus,
 		search,
 		listing,
 		detail,
@@ -376,6 +427,42 @@ const server = createServer(async (req, res) => {
 			res.end();
 			return;
 		}
+		if (url.pathname === "/settings" && (req.method === "GET" || req.method === "POST")) {
+			const selected = session.library;
+			if (!selected) return fail(404);
+			let form: URLSearchParams | undefined;
+			if (req.method === "POST") {
+				if (req.headers.origin !== "http://" + req.headers.host) return fail(403);
+				if (
+					req.headers["content-type"]?.split(";")[0] !==
+					"application/x-www-form-urlencoded"
+				)
+					return fail(415);
+				const chunks: Buffer[] = [];
+				let length = 0;
+				for await (const chunk of req) {
+					length += chunk.length;
+					if (length > 1024) return fail(413);
+					chunks.push(chunk);
+				}
+				if (session.library !== selected || sessions.get(token!) !== session)
+					return fail(409);
+				form = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+			}
+			const page = selected.settings(form);
+			if (page.status === 303) {
+				res.writeHead(303, { location: "/settings?saved=1" });
+				res.end();
+			} else {
+				const saved =
+					page.status === 200 && url.searchParams.get("saved") === "1"
+						? '<p role="status">设置已保存。</p>'
+						: "";
+				res.writeHead(page.status, { "content-type": "text/html; charset=utf-8" });
+				res.end(layout("settings", saved + page.html));
+			}
+			return;
+		}
 		if (req.method !== "GET") return fail(405);
 		if (url.pathname === "/choose" || (url.pathname === "/" && !session.library)) {
 			res.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -391,6 +478,8 @@ const server = createServer(async (req, res) => {
 			const selected = session.library;
 			html = await search(q, url.searchParams.get("mode") === "lexical");
 			if (session.library !== selected) return fail(409);
+		} else if (url.pathname === "/index-status") {
+			html = session.library.indexStatus();
 		} else if (url.pathname === "/") {
 			const tab = url.searchParams.get("tab") ?? "episodes";
 			if (!Object.hasOwn(names, tab)) return fail(404);

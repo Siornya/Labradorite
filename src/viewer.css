@@ -30,6 +30,7 @@ header strong {
 nav {
 	display: flex;
 	gap: 20px;
+	flex-wrap: wrap;
 }
 a {
 	color: #20665e;
@@ -108,6 +109,31 @@ button {
 	background: #205249;
 	color: white;
 	cursor: pointer;
+}
+pre {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+progress {
+	width: 100%;
+	max-width: 480px;
+	accent-color: #205249;
+}
+.settings {
+	display: grid;
+	max-width: 40rem;
+	gap: 12px;
+}
+.settings label {
+	display: grid;
+	gap: 4px;
+	font-weight: 600;
+}
+.settings input {
+	width: 10rem;
+}
+.settings button {
+	justify-self: start;
 }
 .directory-path {
 	flex: 1;

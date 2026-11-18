@@ -144,6 +144,13 @@ test("stdio MCP indexes through compatible HTTP embeddings and returns source-ba
 					headers: { cookie, origin: login.origin },
 					redirect: "manual",
 				});
+				const beforeStatus: number = inputs.length;
+				const status = await (
+					await fetch(new URL("/index-status", login), { headers: { cookie } })
+				).text();
+				assert.match(status, /语义索引覆盖率：100%/);
+				assert.match(status, /最近任务：已完成/);
+				assert.equal(inputs.length, beforeStatus, "Viewing status must not call embedding");
 				const search = new URL("/search", login);
 				search.searchParams.set("q", "脚踏出游");
 				const result = await (await fetch(search, { headers: { cookie } })).text();

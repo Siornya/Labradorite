@@ -72,6 +72,8 @@ vp run index "/path/to/runtime.json"
 
 空闲回顾时，上层 AI 可以用同一个 `memory_review`，通过 `episodes` 引用已存经历的 ID 和版本，写下完整的当前印象。例如“讨论复杂方案时，小林倾向先看草稿”。两种用法都默认直接保存。需要先预览时，加上 `dry_run: true` 即可。浏览器的“人物档案”和 `memory_read` 的 `kind: "person"` 都能查看历次判断，追溯到每次判断所依据的经历版本。
 
+经历可通过 `happen` 单独保存事件发生时间、精度和来源依据，`review` 始终表示本次整理时间。补录旧事或再次提及时，修订省略 `happen` 会保留原值；无法确定的发生时间保持未知。`memory_recall` 使用 `time_basis: "happen"` 配合 `from` / `to` 查询发生时间，查看器的经历页也支持时间筛选与排序。字段及区间语义见[工具参考](docs/tools.md#事件发生时间)。
+
 工具字段、检索返回值和媒体导入示例见[工具参考](docs/tools.md)。
 
 ## 备份、导出与恢复

@@ -120,6 +120,70 @@
 		},
 		"dry_run": {
 			"type": "boolean"
+		},
+		"happen": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["kind"],
+			"description": "Event occurrence, independent of recording time. Omission preserves the existing value on revision; use kind=unknown to clear. Point means an event somewhere within the stated precision, not a duration. Known times require source_ids and basis. Calendar dates require utc_offset. Interval may have one unknown endpoint.",
+			"properties": {
+				"kind": {
+					"enum": ["unknown", "point", "interval"]
+				},
+				"start": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["value", "precision"],
+					"properties": {
+						"value": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 64
+						},
+						"precision": {
+							"enum": ["year", "month", "day", "second", "millisecond"]
+						}
+					}
+				},
+				"end": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["value", "precision"],
+					"properties": {
+						"value": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 64
+						},
+						"precision": {
+							"enum": ["year", "month", "day", "second", "millisecond"]
+						}
+					}
+				},
+				"utc_offset": {
+					"type": "string",
+					"pattern": "^(Z|[+-](0[0-9]|1[0-4]):[0-5][0-9])$"
+				},
+				"description": {
+					"type": "string",
+					"minLength": 1,
+					"maxLength": 1024
+				},
+				"basis": {
+					"enum": ["stated", "inferred"]
+				},
+				"source_ids": {
+					"type": "array",
+					"minItems": 1,
+					"maxItems": 32,
+					"uniqueItems": true,
+					"items": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 128
+					}
+				}
+			}
 		}
 	}
 }

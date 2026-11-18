@@ -72,6 +72,14 @@ test("MCP album, Markdown export and restored instance retain the original media
 			operation_id: "episode",
 			base_seq: status.snapshot_seq,
 			title: "照片",
+			happen: {
+				kind: "point",
+				start: { value: "2026-10", precision: "month" },
+				utc_offset: "+08:00",
+				basis: "stated",
+				source_ids: [source.id],
+				description: "十月的活动",
+			},
 			summary: "摄影社的阿林分享了他拍摄的活动照片，说他喜欢记录社团活动。",
 			source_ids: [source.id],
 			beats: [{ text: "收到照片", source_ids: [source.id] }],
@@ -85,6 +93,16 @@ test("MCP album, Markdown export and restored instance retain the original media
 			},
 		});
 		const { episode, person } = organized;
+		const window = { from: "2026-10-01T00:00:00+08:00", to: "2026-10-31T23:59:59+08:00" };
+		const recalled = await call("memory_recall", {
+			query: "",
+			kind: "episode",
+			time_basis: "happen",
+			...window,
+		});
+		assert.equal(recalled.items[0].id, episode.id);
+		assert.deepEqual(recalled.items[0].happen, episode.happen);
+
 		const people = await call("memory_people", { query: "摄影社" });
 		assert.deepEqual(
 			people.items.map((p: { id: string }) => p.id),
@@ -160,6 +178,24 @@ test("MCP album, Markdown export and restored instance retain the original media
 			);
 			assert.equal(select.status, 303);
 			const get = (path: string) => fetch(new URL(path, login), { headers: { cookie } });
+			const filter = new URLSearchParams({
+				tab: "episodes",
+				time_basis: "happen",
+				...window,
+			});
+			const events = await (await get("/?" + filter)).text();
+			assert.ok(
+				events.includes("/episode/" + episode.id) && events.includes("2026-10（月精度）"),
+			);
+			filter.set("from", "2026-11-01T00:00:00+08:00");
+			filter.set("to", "2026-11-30T23:59:59+08:00");
+			assert.ok(
+				!(await (await get("/?" + filter)).text()).includes("/episode/" + episode.id),
+			);
+			filter.set("from", "invalid");
+			assert.ok((await (await get("/?" + filter)).text()).includes("时间筛选无效"));
+			const detail = await (await get("/episode/" + episode.id)).text();
+			assert.ok(detail.includes("时间依据") && detail.includes("十月的活动"));
 			const directory = await (await get("/?tab=people")).text();
 			assert.ok(directory.includes("/person/" + person.id));
 			const profile = await (await get("/person/" + person.id)).text();
@@ -221,6 +257,11 @@ test("MCP album, Markdown export and restored instance retain the original media
 		await client.close();
 		client = new Client({ name: "restored", version: "1" });
 		await connect(join(restored, "runtime.json"));
+		assert.ok(
+			readFileSync(join(exported, episode.id + "-v1.md"), "utf8").includes(
+				"2026-10（月精度）",
+			),
+		);
 		const restoredPerson = (await call("memory_read", { kind: "person", id: person.id }))
 			.profile;
 		assert.equal(restoredPerson.current_impression.episodes[0].id, episode.id);

@@ -1,3 +1,11 @@
+import { readEpisodeBody } from "./episode-body.js";
+import {
+	validTimestamp,
+	validateEventTime,
+	eventRange,
+	overlaps,
+	eventOrder,
+} from "@/domain/event-time.js";
 import type { MediaAsset } from "./media.js";
 import { findPeople, profileSchema, readPerson } from "./profiles.js";
 import reviewSchema from "@/contracts/schemas/review-person.json" with { type: "json" };
@@ -39,7 +47,7 @@ export interface Episode extends Omit<
 	id: string;
 	revision: number;
 	commit_seq: string;
-	recorded_at: string;
+	review: string;
 	semantic_status: "model_proposed";
 	stale?: boolean;
 }
@@ -92,19 +100,6 @@ function canonical(value: unknown): string {
 		.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
 		.map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`)
 		.join(",")}}`;
-}
-function validTimestamp(value: string): boolean {
-	const match =
-		/^(\d{4})-(\d{2})-(\d{2})T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,3})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.exec(
-			value,
-		);
-	if (!match || !Number.isFinite(Date.parse(value))) return false;
-	const year = Number(match[1]),
-		month = Number(match[2]),
-		day = Number(match[3]);
-	const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
-	const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-	return month >= 1 && month <= 12 && day >= 1 && day <= days[month - 1]!;
 }
 export class MaterialStore {
 	readonly #db: Database.Database;
@@ -356,6 +351,17 @@ export class MaterialStore {
 			throw new MaterialError("VALIDATION_ERROR");
 		if (this.sequence(scope) !== input.base_seq) throw new MaterialError("STALE_BASIS");
 		for (const id of input.source_ids) this.read(scope, id);
+		const time = input.happen ?? (input.id ? this.episode(scope, input.id).happen : undefined);
+		if (time) {
+			try {
+				validateEventTime(time);
+			} catch {
+				throw new MaterialError("VALIDATION_ERROR");
+			}
+			for (const id of time.source_ids ?? []) {
+				if (!input.source_ids.includes(id)) throw new MaterialError("SOURCE_INVALID");
+			}
+		}
 		for (const part of [...input.beats, ...input.interpretations])
 			for (const id of part.source_ids) {
 				if (!input.source_ids.includes(id)) throw new MaterialError("SOURCE_INVALID");
@@ -392,10 +398,19 @@ export class MaterialStore {
 			"thread",
 			"activity_state",
 			"unknowns",
+			"happen",
 		] as const;
 		const changes = keys
-			.filter((key) => canonical(old?.[key] ?? null) !== canonical(input[key]))
-			.map((field) => ({ field, before: old?.[field] ?? null, after: input[field] }));
+			.filter(
+				(key) =>
+					canonical(old?.[key] ?? null) !==
+					canonical((key === "happen" ? (input[key] ?? old?.[key]) : input[key]) ?? null),
+			)
+			.map((field) => ({
+				field,
+				before: old?.[field] ?? null,
+				after: (field === "happen" ? (input[field] ?? old?.[field]) : input[field]) ?? null,
+			}));
 		const overlapping = new Set<string>();
 		for (const source of input.source_ids) {
 			const rows = this.#db
@@ -425,7 +440,7 @@ export class MaterialStore {
 		const {
 			revision: _revision,
 			commit_seq: _seq,
-			recorded_at: _time,
+			review: _time,
 			semantic_status: _semantic,
 			stale: _stale,
 			...body
@@ -443,6 +458,7 @@ export class MaterialStore {
 			summary: input.summary ?? old.summary,
 			thread: input.thread === undefined ? old.thread : input.thread,
 			activity_state: input.activity_state ?? old.activity_state,
+			...((input.happen ?? old.happen) ? { happen: input.happen ?? old.happen } : {}),
 		};
 		return input.dry_run
 			? this.previewEpisodeReview(scope, proposal)
@@ -456,11 +472,13 @@ export class MaterialStore {
 			this.#checkProposal(scope, input);
 			const id = input.id ?? randomUUID();
 			let revision = 1;
+			let happen = input.happen;
 			if (input.id) {
 				const old = this.episode(scope, id);
 				if (old.revision !== input.expected_revision)
 					throw new MaterialError("REVISION_CONFLICT");
 				revision = old.revision + 1;
+				happen ??= old.happen;
 			}
 			const {
 				operation_id: _op,
@@ -471,10 +489,11 @@ export class MaterialStore {
 			} = input;
 			const episode: Episode = {
 				...body,
+				...(happen ? { happen } : {}),
 				id,
 				revision,
 				commit_seq: this.#next(scope),
-				recorded_at: this.clock.now().toISOString(),
+				review: this.clock.now().toISOString(),
 				semantic_status: "model_proposed",
 			};
 			this.#db
@@ -519,7 +538,7 @@ export class MaterialStore {
 					: [id, scope.space, scope.world, revision]),
 			) as { body: string } | undefined;
 		if (!row) throw new MaterialError("NOT_FOUND");
-		const ep = JSON.parse(row.body) as Episode;
+		const ep = readEpisodeBody(row.body);
 		for (const source of ep.source_ids) this.read(scope, source);
 		return ep;
 	}
@@ -790,6 +809,7 @@ export class MaterialStore {
 			seq: string;
 			text: string;
 			time: string | null;
+			event_order: number | null;
 			value: Material | Episode | undefined;
 			terms: string[];
 			score: number;
@@ -814,15 +834,21 @@ export class MaterialStore {
 			if (input.thread && value.thread !== input.thread) return;
 			// Authored time and channel are material metadata; never invent an episode timestamp or channel.
 			if (input.channel && (!isMaterial || m.channel !== input.channel)) return;
+			if ((basis === "happen" || basis === "review") && isMaterial) return;
+			const occurrence = !isMaterial ? eventRange(ep.happen) : null;
 			const time =
-				basis === "authored_at"
-					? isMaterial
-						? m.authored_at
-						: null
-					: isMaterial
-						? m.received_at
-						: ep.recorded_at;
-			if (
+				basis === "happen"
+					? null
+					: basis === "authored_at"
+						? isMaterial
+							? m.authored_at
+							: null
+						: isMaterial
+							? m.received_at
+							: ep.review;
+			if (basis === "happen") {
+				if (!overlaps(occurrence, input.from, input.to)) return;
+			} else if (
 				(input.from || input.to) &&
 				(!time ||
 					(input.from && Date.parse(time) < Date.parse(input.from)) ||
@@ -843,6 +869,7 @@ export class MaterialStore {
 				seq: value.commit_seq,
 				text,
 				time,
+				event_order: basis === "happen" ? eventOrder(ep.happen) : null,
 				value: q ? undefined : value,
 				terms,
 				score,
@@ -851,6 +878,9 @@ export class MaterialStore {
 				top.sort(
 					(a, b) =>
 						b.score - a.score ||
+						(basis === "happen"
+							? (b.event_order ?? -Infinity) - (a.event_order ?? -Infinity)
+							: 0) ||
 						(BigInt(a.seq) > BigInt(b.seq)
 							? -1
 							: BigInt(a.seq) < BigInt(b.seq)
@@ -897,7 +927,7 @@ export class MaterialStore {
 						"SELECT body FROM episodes e WHERE space=? AND world=? AND revision=(SELECT MAX(x.revision) FROM episodes x WHERE x.id=e.id)",
 					)
 					.iterate(scope.space, scope.world) as Iterable<{ body: string }>)
-					consider("episode", JSON.parse(row.body));
+					consider("episode", readEpisodeBody(row.body));
 		}
 		const output = {
 			snapshot_seq,
@@ -955,12 +985,18 @@ export class MaterialStore {
 				id: item.id,
 				commit_seq: item.seq,
 				time: item.time,
+				happen:
+					item.kind === "episode"
+						? ((item.value as Episode).happen ?? { kind: "unknown" })
+						: undefined,
 				time_kind:
-					basis === "authored_at"
-						? "authored_at"
-						: item.kind === "material"
-							? "received_at"
-							: "recorded_at",
+					basis === "happen"
+						? "happen"
+						: basis === "authored_at"
+							? "authored_at"
+							: item.kind === "material"
+								? "received_at"
+								: "review",
 				channel: item.kind === "material" ? (item.value as Material).channel : undefined,
 				thread: item.value.thread,
 				source_kind:

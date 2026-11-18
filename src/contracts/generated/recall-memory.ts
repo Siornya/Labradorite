@@ -6,7 +6,10 @@ export interface RecallMemory {
 	max_bytes?: number;
 	kind?: "material" | "episode";
 	review_status?: "pending" | "reviewed";
-	time_basis?: "received_at" | "authored_at";
+	/**
+	 * happen selects episodes by possible overlap with the event range, excluding unknown times when a window is set. Empty query browses event times newest first. review selects episode revision time. received_at retains the existing mixed material/episode behavior.
+	 */
+	time_basis?: "received_at" | "authored_at" | "review" | "happen";
 	from?: string;
 	to?: string;
 	channel?: string;

@@ -1,3 +1,5 @@
+import { readEpisodeBody } from "../src/storage/episode-body.js";
+import { describeEventTime } from "../src/domain/event-time.js";
 import Database from "better-sqlite3";
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -5,7 +7,7 @@ import { tmpdir } from "node:os";
 import { loadRuntimeConfig } from "@/runtime-config.js";
 import { checksum } from "@/storage/media.js";
 import { findPeople, readPerson } from "@/storage/profiles.js";
-import type { Material, Episode } from "@/storage/materials.js";
+import type { Material } from "@/storage/materials.js";
 
 const [command, input, target] = process.argv.slice(2);
 if (
@@ -174,10 +176,14 @@ async function run() {
 					"SELECT body FROM episodes e JOIN spaces s ON e.space=s.id WHERE e.space=? AND e.world=? AND s.character=? ORDER BY e.id,e.revision",
 				)
 				.iterate(...params) as Iterable<{ body: string }>) {
-				const e = JSON.parse(row.body) as Episode;
+				const e = readEpisodeBody(row.body);
 				const lines = [
 					"# " + e.title,
-					"模型整理 · 修订 " + e.revision,
+					"模型整理 · 修订 " + e.revision + " · " + e.review,
+					"发生：" + quote(describeEventTime(e.happen)),
+					...(e.happen?.source_ids ?? []).map(
+						(id) => "[时间依据 " + id + "](" + id + ".md)",
+					),
 					quote(e.summary),
 					...e.beats.map((x) => quote(x.text)),
 					...e.interpretations.map((x) => "解释 " + quote(x.text)),

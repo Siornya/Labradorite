@@ -27,7 +27,8 @@
 			"enum": ["pending", "reviewed"]
 		},
 		"time_basis": {
-			"enum": ["received_at", "authored_at"]
+			"enum": ["received_at", "authored_at", "review", "happen"],
+			"description": "happen selects episodes by possible overlap with the event range, excluding unknown times when a window is set. Empty query browses event times newest first. review selects episode revision time. received_at retains the existing mixed material/episode behavior."
 		},
 		"from": {
 			"type": "string",

@@ -22,11 +22,30 @@
 			"additionalProperties": false,
 			"description": "Associate the saved episode revision with a person in the same transaction. Create with name and identity or update with id and expected_revision. Include a complete impression only when understanding changes.",
 			"properties": {
-				"name": { "type": "string", "pattern": "\\S", "maxLength": 128 },
-				"identity": { "type": "string", "pattern": "\\S", "maxLength": 512 },
-				"id": { "type": "string", "minLength": 1, "maxLength": 128 },
-				"expected_revision": { "type": "integer", "minimum": 1 },
-				"impression": { "type": "string", "pattern": "\\S", "maxLength": 2048 },
+				"name": {
+					"type": "string",
+					"pattern": "\\S",
+					"maxLength": 128
+				},
+				"identity": {
+					"type": "string",
+					"pattern": "\\S",
+					"maxLength": 512
+				},
+				"id": {
+					"type": "string",
+					"minLength": 1,
+					"maxLength": 128
+				},
+				"expected_revision": {
+					"type": "integer",
+					"minimum": 1
+				},
+				"impression": {
+					"type": "string",
+					"pattern": "\\S",
+					"maxLength": 2048
+				},
 				"other_episodes": {
 					"type": "array",
 					"maxItems": 31,
@@ -36,8 +55,15 @@
 						"additionalProperties": false,
 						"required": ["id", "revision"],
 						"properties": {
-							"id": { "type": "string", "minLength": 1, "maxLength": 128 },
-							"revision": { "type": "integer", "minimum": 1 }
+							"id": {
+								"type": "string",
+								"minLength": 1,
+								"maxLength": 128
+							},
+							"revision": {
+								"type": "integer",
+								"minimum": 1
+							}
 						}
 					}
 				}
@@ -153,6 +179,70 @@
 				"type": "string",
 				"minLength": 1,
 				"maxLength": 1024
+			}
+		},
+		"happen": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["kind"],
+			"description": "Event occurrence, independent of recording time. Omission preserves the existing value on revision; use kind=unknown to clear. Point means an event somewhere within the stated precision, not a duration. Known times require source_ids and basis. Calendar dates require utc_offset. Interval may have one unknown endpoint.",
+			"properties": {
+				"kind": {
+					"enum": ["unknown", "point", "interval"]
+				},
+				"start": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["value", "precision"],
+					"properties": {
+						"value": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 64
+						},
+						"precision": {
+							"enum": ["year", "month", "day", "second", "millisecond"]
+						}
+					}
+				},
+				"end": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["value", "precision"],
+					"properties": {
+						"value": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 64
+						},
+						"precision": {
+							"enum": ["year", "month", "day", "second", "millisecond"]
+						}
+					}
+				},
+				"utc_offset": {
+					"type": "string",
+					"pattern": "^(Z|[+-](0[0-9]|1[0-4]):[0-5][0-9])$"
+				},
+				"description": {
+					"type": "string",
+					"minLength": 1,
+					"maxLength": 1024
+				},
+				"basis": {
+					"enum": ["stated", "inferred"]
+				},
+				"source_ids": {
+					"type": "array",
+					"minItems": 1,
+					"maxItems": 32,
+					"uniqueItems": true,
+					"items": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 128
+					}
+				}
 			}
 		}
 	}

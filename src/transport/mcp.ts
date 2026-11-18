@@ -100,7 +100,7 @@ export function createMemoryServer(memory: {
 			{
 				name: "memory_amend",
 				description:
-					"Append sources, beats, interpretations or unknowns and optionally replace title, summary, thread or activity state without resending untouched fields. Requires base_seq and expected_revision. Set dry_run true for a field diff. Previous revisions remain available. To retract existing elements use a full proposal and preview its diff.",
+					"Append sources, beats, interpretations or unknowns and optionally replace title, summary, thread, activity state or happen without resending untouched fields. Requires base_seq and expected_revision. Set dry_run true for a field diff. Omit happen to preserve occurrence time; kind=unknown explicitly clears it. Previous revisions remain available. To retract existing elements use a full proposal and preview its diff.",
 				inputSchema: { ...amendSchema, type: "object" as const },
 			},
 			{
@@ -112,7 +112,7 @@ export function createMemoryServer(memory: {
 			{
 				name: "memory_review",
 				description:
-					"Read materials with memory_recall/memory_read first. Submit your own review proposal. A successful save starts semantic indexing in the background. Call with {} to finish without a proposal. Waits up to one second for indexing. If indexing.state is running, check memory_status().retrieval.indexing for progress and the final state. Set dry_run=true to preview without writing; omit it or set false to save directly. With source_ids, save or revise an episode grounded in readable materials. Expressed interpretations require character statements. Include person_review to link a significant person and optionally update their impression atomically. With episodes instead, cite existing episode IDs and revisions to review a person directly. Find candidates with memory_people; create with name and identity or update with id and expected_revision. Omit impression to only link evidence, or supply the complete new judgment. Use snapshot_seq as base_seq and a stable operation_id; reread on conflict.",
+					"Read materials with memory_recall/memory_read first. Submit your own review proposal. A successful save starts semantic indexing in the background. Call with {} to finish without a proposal. Waits up to one second for indexing. If indexing.state is running, check memory_status().retrieval.indexing for progress and the final state. Set dry_run=true to preview without writing; omit it or set false to save directly. With source_ids, save or revise an episode grounded in readable materials. Use happen for event time with precision and cited evidence, separately from review. Later mentions of the same event should revise the existing episode; omission preserves its event time. Expressed interpretations require character statements. Include person_review to link a significant person and optionally update their impression atomically. With episodes instead, cite existing episode IDs and revisions to review a person directly. Find candidates with memory_people; create with name and identity or update with id and expected_revision. Omit impression to only link evidence, or supply the complete new judgment. Use snapshot_seq as base_seq and a stable operation_id; reread on conflict.",
 				inputSchema: reviewSchema,
 			},
 			{

@@ -1,4 +1,12 @@
 import { libraryMatches, settingsPage } from "./viewer-settings.js";
+import { readEpisodeBody } from "./storage/episode-body.js";
+import {
+	describeEventTime,
+	eventRange,
+	eventOrder,
+	overlaps,
+	validTimestamp,
+} from "./domain/event-time.js";
 import sharp from "sharp";
 import { registerViewer } from "./viewer-registry.js";
 import { createSearchClient, searchLibrary as searchLocalLibrary } from "./viewer-search.js";
@@ -12,7 +20,7 @@ import { createReadStream, readFileSync, existsSync, readdirSync, statSync } fro
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { loadRuntimeConfig } from "./runtime-config.js";
 import { defaultDataDirectory } from "./data-directory.js";
-import type { Material, Episode } from "./storage/materials.js";
+import type { Material } from "./storage/materials.js";
 import { indexReason, readIndexStatus } from "./retrieval/index-status.js";
 
 const args = process.argv.slice(2);
@@ -122,6 +130,26 @@ function openLibrary(path: string) {
 			`<h1>索引状态</h1>${content}<p><a href="/index-status">刷新状态</a></p><p>此页只读取状态，不会发起 embedding 请求。</p>`,
 		);
 	}
+	// Filter and sort before LIMIT so browsing does not load every episode body into memory.
+	db.function("episode_time_order", { deterministic: true }, (body, basis) => {
+		const episode = readEpisodeBody(String(body));
+		return basis === "happen" ? eventOrder(episode.happen) : Date.parse(episode.review);
+	});
+	db.function(
+		"episode_time_matches",
+		{ deterministic: true },
+		(body, basis, from, to, unknown) => {
+			const episode = readEpisodeBody(String(body));
+			const range = eventRange(episode.happen);
+			if (unknown && range) return 0;
+			return Number(
+				basis === "happen"
+					? overlaps(range, String(from) || undefined, String(to) || undefined)
+					: (!from || Date.parse(episode.review) >= Date.parse(String(from))) &&
+							(!to || Date.parse(episode.review) <= Date.parse(String(to))),
+			);
+		},
+	);
 	function material(id: string): Material | undefined {
 		const row = db.prepare("SELECT m.body" + materialFrom + " AND m.id=?").get(...scope, id) as
 			| Row
@@ -146,11 +174,30 @@ function openLibrary(path: string) {
 			1000000,
 		);
 		const episodes = tab === "episodes";
+		const basis = url.searchParams.get("time_basis") ?? "happen";
+		const from = url.searchParams.get("from") || undefined;
+		const to = url.searchParams.get("to") || undefined;
+		const unknown = url.searchParams.get("unknown") === "1";
+		if (
+			episodes &&
+			(!["happen", "review"].includes(basis) ||
+				(from && !validTimestamp(from)) ||
+				(to && !validTimestamp(to)) ||
+				(from && to && Date.parse(from) > Date.parse(to)))
+		)
+			return layout(
+				tab,
+				'<p role="alert">时间筛选无效，请使用带时区的 ISO 时间，且开始时间不能晚于结束时间。</p>',
+			);
+		const timeControls = episodes
+			? `<select name="time_basis" aria-label="时间依据"><option value="happen" ${basis === "happen" ? "selected" : ""}>发生时间</option><option value="review" ${basis === "review" ? "selected" : ""}>记录时间</option></select><label>从（含时区）<input name="from" aria-label="起始时间（含时区）" placeholder="2026-10-01T00:00:00+08:00" value="${escape(from ?? "")}"></label><label>至（含时区）<input name="to" aria-label="结束时间（含时区）" placeholder="2026-10-31T23:59:59+08:00" value="${escape(to ?? "")}"></label><label><input type="checkbox" name="unknown" value="1" ${unknown ? "checked" : ""}>仅发生时间未知</label>`
+			: "";
+
 		const query = episodes
 			? "SELECT e.body" +
 				episodeFrom +
 				latest +
-				" AND (instr(json_extract(e.body,'$.title'),?) OR instr(json_extract(e.body,'$.summary'),?)) ORDER BY e.rowid DESC"
+				" AND (instr(json_extract(e.body,'$.title'),?) OR instr(json_extract(e.body,'$.summary'),?)) AND episode_time_matches(e.body,?,?,?,?) ORDER BY episode_time_order(e.body,?) DESC,e.rowid DESC"
 			: "SELECT m.body" +
 				materialFrom +
 				(tab === "album" ? " AND json_type(m.body,'$.media')='object'" : "") +
@@ -158,13 +205,18 @@ function openLibrary(path: string) {
 		// SQLite instr(text,'') is 1, so empty queries include every visible row.
 		const rows = db
 			.prepare(query + " LIMIT 31 OFFSET ?")
-			.all(...scope, q, ...(episodes ? [q] : []), page * 30) as Row[];
+			.all(
+				...scope,
+				q,
+				...(episodes ? [q, basis, from ?? "", to ?? "", unknown ? 1 : 0, basis] : []),
+				page * 30,
+			) as Row[];
 		const cards = rows
 			.slice(0, 30)
 			.map((row) => {
 				if (episodes) {
-					const e = JSON.parse(row.body) as Episode;
-					return `<article><small>${escape(e.recorded_at)} · 修订 ${e.revision}</small><h2><a href="/episode/${encodeURIComponent(e.id)}">${escape(e.title)}</a></h2><p>${escape(e.summary.slice(0, 180))}</p></article>`;
+					const e = readEpisodeBody(row.body);
+					return `<article><small>发生：${escape(describeEventTime(e.happen))}<br>记录：${escape(e.review)} · 修订 ${e.revision}</small><h2><a href="/episode/${encodeURIComponent(e.id)}">${escape(e.title)}</a></h2><p>${escape(e.summary.slice(0, 180))}</p></article>`;
 				}
 				const m = JSON.parse(row.body) as Material;
 				const path = "/material/" + encodeURIComponent(m.id);
@@ -176,10 +228,10 @@ function openLibrary(path: string) {
 			})
 			.join("");
 		const link = (n: number, label: string) =>
-			`<a href="/?tab=${tab}&amp;q=${encodeURIComponent(q)}&amp;page=${n}">${label}</a>`;
+			`<a href="/?tab=${tab}&amp;q=${encodeURIComponent(q)}&amp;page=${n}${episodes ? `&amp;time_basis=${basis}&amp;from=${encodeURIComponent(from ?? "")}&amp;to=${encodeURIComponent(to ?? "")}&amp;unknown=${unknown ? "1" : "0"}` : ""}">${label}</a>`;
 		return layout(
 			tab,
-			`<h1>${names[tab]}</h1><form><input type="hidden" name="tab" value="${tab}"><input name="q" aria-label="筛选当前列表" placeholder="筛选当前列表" value="${escape(q)}"><button>筛选</button></form><div class="${tab === "album" ? "grid" : ""}">${cards || "<p>没有符合条件的记录</p>"}</div>${page ? link(page - 1, "上一页") : ""} ${rows.length > 30 ? link(page + 1, "下一页") : ""}`,
+			`<h1>${names[tab]}</h1><form><input type="hidden" name="tab" value="${tab}"><input name="q" aria-label="筛选当前列表" placeholder="筛选当前列表" value="${escape(q)}">${timeControls}<button>筛选</button></form>${episodes ? "<p>发生时间按可能范围与窗口相交筛选；月、年精度不代表持续整月或整年。未知发生时间排在末尾，指定发生时间窗口时不命中。</p>" : ""}<div class="${tab === "album" ? "grid" : ""}">${cards || "<p>没有符合条件的记录</p>"}</div>${page ? link(page - 1, "上一页") : ""} ${rows.length > 30 ? link(page + 1, "下一页") : ""}`,
 		);
 	}
 	function detail(id: string, episode: boolean, rev: string | null) {
@@ -187,7 +239,7 @@ function openLibrary(path: string) {
 			const rows = db
 				.prepare("SELECT e.body" + episodeFrom + " AND e.id=? ORDER BY e.revision DESC")
 				.all(...scope, id) as Row[];
-			const history = rows.map((row) => JSON.parse(row.body) as Episode);
+			const history = rows.map((row) => readEpisodeBody(row.body));
 			const e = rev ? history.find((x) => String(x.revision) === rev) : history[0];
 			if (!e) return;
 			const parts = (label: string, values: string[]) =>
@@ -204,7 +256,7 @@ function openLibrary(path: string) {
 				.join("");
 			return layout(
 				"episodes",
-				`<h1>${escape(e.title)}</h1><small>模型整理 · ${escape(e.recorded_at)}</small><p>${escape(e.summary)}</p>${parts(
+				`<h1>${escape(e.title)}</h1><small>模型整理 · ${escape(e.review)}</small><p>发生：${escape(describeEventTime(e.happen))}</p>${e.happen?.source_ids?.length ? `<p>时间依据：${e.happen.source_ids.map((id) => `<a href="/material/${encodeURIComponent(id)}">${escape(id)}</a>`).join(" · ")}</p>` : ""}<p>${escape(e.summary)}</p>${parts(
 					"经过",
 					e.beats.map((x) => x.text),
 				)}${parts(

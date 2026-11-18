@@ -140,12 +140,24 @@ test("MCP album, Markdown export and restored instance retain the original media
 			assert.equal(css.status, 200);
 			assert.match(css.headers.get("content-type") ?? "", /^text\/css/);
 			assert.equal(await css.text(), readFileSync(resolve("src/viewer.css"), "utf8"));
-			assert.ok(entry.includes("打开当前记忆库"));
-			const select = await fetch(new URL("/select?current=1", login), {
-				method: "POST",
-				headers: { cookie, origin: login.origin },
-				redirect: "manual",
-			});
+			assert.ok(entry.includes("打开记忆库") && entry.includes("更换目录"));
+			const browseLink = /href="([^"]+)">更换目录/.exec(entry)![1]!.replaceAll("&amp;", "&");
+			const folders = await (
+				await fetch(new URL(browseLink, login), { headers: { cookie } })
+			).text();
+			const useFolder = /href="([^"]+)">使用此目录/.exec(folders)![1]!;
+			const chosen = await (
+				await fetch(new URL(useFolder, login), { headers: { cookie } })
+			).text();
+			assert.ok(chosen.includes("当前目录："));
+			const select = await fetch(
+				new URL(/action="([^"]+)"><button>打开记忆库/.exec(chosen)![1]!, login),
+				{
+					method: "POST",
+					headers: { cookie, origin: login.origin },
+					redirect: "manual",
+				},
+			);
 			assert.equal(select.status, 303);
 			const get = (path: string) => fetch(new URL(path, login), { headers: { cookie } });
 			const directory = await (await get("/?tab=people")).text();

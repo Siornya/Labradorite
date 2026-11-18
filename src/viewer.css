@@ -135,6 +135,71 @@ progress {
 .settings button {
 	justify-self: start;
 }
+body:has(.library-entry) {
+	display: grid;
+	grid-template: 1fr/1fr;
+	min-height: 100svh;
+}
+body:has(.library-entry) > header,
+main:has(.library-entry) {
+	grid-area: 1/1;
+}
+body:has(.library-entry) > header {
+	align-self: start;
+	z-index: 1;
+}
+main:has(.library-entry) {
+	align-self: center;
+	justify-self: center;
+	margin: 0;
+	padding: 0 16px;
+	width: 100%;
+}
+.library-entry {
+	position: relative;
+	display: grid;
+	justify-items: center;
+}
+.library-entry button {
+	padding: 12px 32px;
+	font-size: 20px;
+}
+.entry-directory {
+	position: absolute;
+	top: 100%;
+	margin-top: 16px;
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	width: min(100%, 44rem);
+	box-sizing: border-box;
+	border: 1px solid #849b90;
+	border-radius: 4px;
+	background: #fff;
+}
+.entry-directory span {
+	align-self: center;
+	padding: 10px 14px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.entry-directory a {
+	display: grid;
+	place-items: center;
+	padding: 8px 14px;
+	border-left: 1px solid #849b90;
+	border-radius: 0 3px 3px 0;
+	background: #e8eee9;
+	white-space: nowrap;
+	text-decoration: none;
+}
+.entry-directory a:hover {
+	background: #dbe6df;
+}
+.entry-directory a:focus-visible {
+	outline: 2px solid #205249;
+	outline-offset: -3px;
+}
 .directory-path {
 	flex: 1;
 }

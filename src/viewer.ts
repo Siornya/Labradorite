@@ -62,7 +62,7 @@ function layout(tab: Tab | "index" | "settings" | null, content: string) {
 			)
 			.join("") +
 		`<a href="/index-status" ${tab === "index" ? 'aria-current="page"' : ""}>索引状态</a><a href="/settings" ${tab === "settings" ? 'aria-current="page"' : ""}>设置</a>`;
-	return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Labradorite · 记忆库</title><link rel="stylesheet" href="/viewer.css"><header><strong>Labradorite</strong><nav>${tab ? tabs + ' <a href="/choose">切换记忆库</a>' : ""}</nav></header><main>${managed ? "" : `<p role="status">${standaloneNotice}</p>`}${searchForm}${content}</main></html>`;
+	return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Labradorite · 记忆库</title><link rel="stylesheet" href="/viewer.css"><header><strong>Labradorite</strong><nav>${tab ? tabs + ' <a href="/choose">切换记忆库</a>' : ""}</nav></header><main>${managed || !tab ? "" : `<p role="status">${standaloneNotice}</p>`}${searchForm}${content}</main></html>`;
 }
 function openLibrary(path: string) {
 	const config = loadRuntimeConfig(path);
@@ -300,6 +300,7 @@ function openLibrary(path: string) {
 		);
 	}
 	return {
+		configPath: resolve(path),
 		settings: (form?: URLSearchParams) => settingsPage(path, config, form),
 		indexStatus,
 		search,
@@ -321,15 +322,22 @@ function localDirectory(value: string) {
 		throw new Error("Expected local absolute directory");
 	return resolve(value);
 }
+function entry(directory: string, useStartupConfig: boolean) {
+	const query = useStartupConfig ? "current=1" : "dir=" + encodeURIComponent(directory);
+	return layout(
+		null,
+		`<div class="library-entry"><form method="post" action="/select?${query}"><button>打开记忆库</button></form><div class="entry-directory"><span title="${escape(directory)}">当前目录：${escape(directory)}</span><a href="/choose?browse=1&amp;dir=${encodeURIComponent(directory)}">更换目录</a></div></div>`,
+	);
+}
 function picker(requested: string, error = "") {
 	let listing = "";
 	try {
 		const path = localDirectory(requested);
 		const entries = readdirSync(path, { withFileTypes: true });
 		const browse = (dest: string, label: string) =>
-			`<a href="/choose?dir=${encodeURIComponent(dest)}">${escape(label)}</a>`;
+			`<a href="/choose?browse=1&amp;dir=${encodeURIComponent(dest)}">${escape(label)}</a>`;
 		if (entries.some((entry) => entry.name === "runtime.json" && entry.isFile()))
-			listing += `<form method="post" action="/select?dir=${encodeURIComponent(path)}"><button>打开此记忆库</button></form>`;
+			listing += `<a href="/choose?dir=${encodeURIComponent(path)}">使用此目录</a>`;
 		else listing += "<p>此目录没有 runtime.json，请选择记忆库所在的文件夹。</p>";
 		listing +=
 			"<section>" +
@@ -348,7 +356,7 @@ function picker(requested: string, error = "") {
 	}
 	return layout(
 		null,
-		`<h1>打开记忆库</h1><form action="/select?current=1" method="post"><button>打开当前记忆库</button></form><details ${error || requested !== startingFolder ? "open" : ""}><summary>选择其他目录</summary><p>选择运行查看器的机器上包含 runtime.json 的文件夹。</p><form action="/choose"><input class="directory-path" name="dir" aria-label="目录路径" value="${escape(requested)}"><button>浏览</button></form>${error ? "<p role=alert>" + escape(error) + "</p>" : ""}${listing}</details>`,
+		`<h1>更换目录</h1><form action="/choose"><input type="hidden" name="browse" value="1"><input class="directory-path" name="dir" aria-label="目录路径" value="${escape(requested)}"><button>浏览</button></form>${error ? "<p role=alert>" + escape(error) + "</p>" : ""}${listing}`,
 	);
 }
 type Session = { library?: ReturnType<typeof openLibrary> };
@@ -393,9 +401,22 @@ const server = createServer(async (req, res) => {
 				id = randomBytes(24).toString("hex");
 				sessions.set(id, {});
 			}
+			const session = sessions.get(id)!;
+			let landing = "/choose";
+			if (url.searchParams.get("library") === "current") {
+				try {
+					const library = openLibrary(resolve(runtime));
+					session.library?.close();
+					session.library = library;
+					landing = "/";
+				} catch {
+					landing = "/choose?open_error=1";
+				}
+			}
+
 			res.writeHead(303, {
 				"set-cookie": cookie + "=" + id + "; Path=/; HttpOnly; SameSite=Strict",
-				location: "/choose",
+				location: landing,
 			});
 			res.end();
 			return;
@@ -420,7 +441,12 @@ const server = createServer(async (req, res) => {
 				session.library = library;
 			} catch {
 				res.writeHead(400, { "content-type": "text/html; charset=utf-8" });
-				res.end(picker(dir, "无法打开记忆库，请检查配置、数据库版本和读取权限。"));
+				res.end(
+					picker(
+						dir || startingFolder,
+						"无法打开记忆库，请检查配置、数据库版本和读取权限。",
+					),
+				);
 				return;
 			}
 			res.writeHead(303, { location: "/" });
@@ -466,7 +492,21 @@ const server = createServer(async (req, res) => {
 		if (req.method !== "GET") return fail(405);
 		if (url.pathname === "/choose" || (url.pathname === "/" && !session.library)) {
 			res.setHeader("Content-Type", "text/html; charset=utf-8");
-			res.end(picker(url.searchParams.get("dir") ?? startingFolder));
+			const directory =
+				url.searchParams.get("dir") ??
+				dirname(session.library?.configPath ?? resolve(runtime));
+			res.end(
+				url.searchParams.has("open_error")
+					? picker(directory, "无法打开当前记忆库，请检查配置或选择其他目录。")
+					: url.searchParams.has("browse")
+						? picker(directory)
+						: entry(
+								localDirectory(directory),
+								!url.searchParams.has("dir") &&
+									(!session.library ||
+										session.library.configPath === resolve(runtime)),
+							),
+			);
 			return;
 		}
 		if (!session.library) return fail(404);

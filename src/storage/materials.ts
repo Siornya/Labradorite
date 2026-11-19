@@ -1,4 +1,8 @@
-import { readEpisodeBody } from "./episode-body.js";
+import { ReviewLog } from "./review-log.js";
+import { SettingLog, effectiveSettings, settingMode, type SettingChange } from "./settings.js";
+import settingSchema from "@/contracts/schemas/review-setting.json" with { type: "json" };
+import type { ReviewSetting } from "@/contracts/generated/review-setting.js";
+import { episodeChanges, readEpisodeBody } from "./episode-body.js";
 import {
 	validTimestamp,
 	validateEventTime,
@@ -33,6 +37,10 @@ import type { SubmitMaterial } from "@/contracts/generated/submit-material.js";
 import { SystemClock, type Clock } from "@/domain/clock.js";
 
 const validator = new Ajv({ strict: true });
+const validateSettingReview = validator.compile<ReviewSetting>(settingSchema);
+const validateSetting = validator.compile<ReviewSetting["setting"]>(
+	settingSchema.properties.setting,
+);
 const validateReview = validator.compile<ReviewPerson>(reviewSchema);
 const validateIndex = validator.compile<IndexMemory>(indexSchema);
 const validatePreviewDelete = validator.compile<PreviewDelete>(previewDeleteSchema);
@@ -115,18 +123,22 @@ function canonical(value: unknown): string {
 export class MaterialStore {
 	readonly #db: Database.Database;
 	readonly #key: string;
+	readonly reviews: ReviewLog;
+	readonly settings: SettingLog;
 	readonly #search: SearchIndex;
 	constructor(
 		path: string,
 		private readonly clock: Clock = new SystemClock(),
 		provider?: EmbeddingProvider,
-		access: "service" | "search" | "inspect" = "service",
+		access: "service" | "search" | "inspect" | "audit" = "service",
 	) {
 		this.#db = new Database(path, {
 			fileMustExist: access !== "service",
 			readonly: access === "inspect" || (access === "search" && !provider),
 		});
 		this.#search = new SearchIndex(this.#db, clock, provider);
+		this.settings = new SettingLog(this.#db);
+		this.reviews = new ReviewLog(this.#db, this.#search, this.settings);
 		try {
 			const version = this.#db.pragma("user_version", { simple: true });
 			if (access !== "service" && version !== 4)
@@ -347,6 +359,8 @@ export class MaterialStore {
 					| undefined;
 				if (row) {
 					if (row.digest !== digest) throw new MaterialError("IDEMPOTENCY_CONFLICT");
+					if (JSON.parse(row.result).audit?.state === "undone")
+						throw new MaterialError("NOT_FOUND");
 					return { result: row.result, replayed: true };
 				}
 				const result = run();
@@ -356,6 +370,93 @@ export class MaterialStore {
 				return { result, replayed: false };
 			})
 			.immediate();
+	}
+	#settingBase(scope: MemoryScope, setting: ReviewSetting["setting"]) {
+		if (Boolean(setting.id) !== Boolean(setting.expected_version))
+			throw new MaterialError("VALIDATION_ERROR");
+		if (!setting.id) return;
+		const current = effectiveSettings(this.settings.history(scope)).find(
+			(r) => r.id === setting.id,
+		);
+		if (!current) throw new MaterialError("NOT_FOUND");
+		if (current.version !== setting.expected_version || current.target !== setting.target)
+			throw new MaterialError("REVISION_CONFLICT");
+		return current;
+	}
+	#recordSetting(
+		scope: MemoryScope,
+		setting: ReviewSetting["setting"],
+		before: SettingChange | undefined,
+		change: Pick<
+			SettingChange,
+			"author" | "mode" | "state" | "episodes" | "reason" | "source_ids"
+		>,
+	) {
+		this.#next(scope);
+		return JSON.stringify({
+			id: before?.id ?? randomUUID(),
+			version: randomUUID(),
+			base: before?.version ?? null,
+			world: scope.world,
+			target: setting.target,
+			title: setting.title,
+			body: setting.body,
+			time: this.clock.now().toISOString(),
+			...change,
+		} satisfies SettingChange);
+	}
+	reviewSetting(principal: string, scope: MemoryScope, input: unknown, preview = false) {
+		if (!validateSettingReview(input)) throw new MaterialError("VALIDATION_ERROR");
+		const plan = () => {
+			if (this.sequence(scope) !== input.base_seq) throw new MaterialError("STALE_BASIS");
+			const before = this.#settingBase(scope, input.setting);
+			const sources = new Set(
+				input.episodes.flatMap(
+					(ref) => this.episode(scope, ref.id, ref.revision).source_ids,
+				),
+			);
+			const mode = before?.mode ?? "owner";
+			const state = mode === "autonomous" ? "unreviewed" : "proposed";
+			return { before, mode, state, sources } as const;
+		};
+		if (preview) {
+			const { before, mode, state } = plan();
+			return {
+				dry_run: true,
+				before: before && { title: before.title, body: before.body },
+				setting: input.setting,
+				mode,
+				state,
+			};
+		}
+		const op = this.#operation(principal, scope, "setting", input, () => {
+			const { before, mode, state, sources } = plan();
+			return this.#recordSetting(scope, input.setting, before, {
+				author: "model",
+				mode,
+				state,
+				episodes: input.episodes,
+				source_ids: [...sources],
+				reason: input.reason,
+			});
+		});
+		return { change: JSON.parse(op.result) as SettingChange, replayed: op.replayed };
+	}
+	saveOwnerSetting(scope: MemoryScope, operation_id: string, input: unknown, policy: unknown) {
+		if (!validateSetting(input) || !/^[a-zA-Z0-9_-]{1,128}$/.test(operation_id))
+			throw new MaterialError("VALIDATION_ERROR");
+		const mode = settingMode(policy);
+		const request = { operation_id, setting: input, mode };
+		this.#operation("viewer-owner", scope, "setting", request, () =>
+			this.#recordSetting(scope, input, this.#settingBase(scope, input), {
+				author: "owner",
+				mode,
+				state: "checked",
+				episodes: [],
+				source_ids: [],
+				reason: "",
+			}),
+		);
 	}
 	#checkProposal(scope: MemoryScope, input: unknown): asserts input is ReviewEpisode {
 		if (!validateEpisodeReview(input) || Boolean(input.id) !== Boolean(input.expected_revision))
@@ -400,28 +501,7 @@ export class MaterialStore {
 	previewEpisodeReview(scope: MemoryScope, input: unknown) {
 		this.#checkProposal(scope, input);
 		const old = input.id ? this.episode(scope, input.id) : undefined;
-		const keys = [
-			"title",
-			"summary",
-			"source_ids",
-			"beats",
-			"interpretations",
-			"thread",
-			"activity_state",
-			"unknowns",
-			"happen",
-		] as const;
-		const changes = keys
-			.filter(
-				(key) =>
-					canonical(old?.[key] ?? null) !==
-					canonical((key === "happen" ? (input[key] ?? old?.[key]) : input[key]) ?? null),
-			)
-			.map((field) => ({
-				field,
-				before: old?.[field] ?? null,
-				after: (field === "happen" ? (input[field] ?? old?.[field]) : input[field]) ?? null,
-			}));
+		const changes = episodeChanges(old, old?.happen ? { happen: old.happen, ...input } : input);
 		const overlapping = new Set<string>();
 		for (const source of input.source_ids) {
 			const rows = this.#db
@@ -488,7 +568,7 @@ export class MaterialStore {
 				const old = this.episode(scope, id);
 				if (old.revision !== input.expected_revision)
 					throw new MaterialError("REVISION_CONFLICT");
-				revision = old.revision + 1;
+				revision = this.reviews.nextRevision("episode", id, old.revision);
 				happen ??= old.happen;
 			}
 			const {
@@ -521,7 +601,12 @@ export class MaterialStore {
 						...(person_review.other_episodes ?? []),
 					])
 				: undefined;
-			return JSON.stringify({ id, revision, person });
+			return JSON.stringify({
+				id,
+				revision,
+				person,
+				audit: { world: scope.world, time: episode.review },
+			});
 		});
 		const ref = JSON.parse(operation.result) as {
 			id: string;
@@ -617,7 +702,9 @@ export class MaterialStore {
 				.prepare("INSERT INTO people(id,space,world,name,identity) VALUES(?,?,?,?,?)")
 				.run(id, scope.space, scope.world, input.name!, input.identity!);
 		}
-		const revision = (input.expected_revision ?? 0) + 1;
+		const revision = input.id
+			? this.reviews.nextRevision("person", id, input.expected_revision!)
+			: 1;
 		this.#db
 			.prepare(
 				"INSERT INTO person_reviews(person,revision,formed_at,impression) VALUES(?,?,?,?)",
@@ -657,7 +744,11 @@ export class MaterialStore {
 		const operation = this.#operation(principal, scope, "review_person", input, () => {
 			this.#checkPersonReviewBasis(scope, input);
 			const ref = this.#writeReview(scope, input, input.episodes);
-			return JSON.stringify({ ...ref, commit_seq: this.#next(scope) });
+			return JSON.stringify({
+				...ref,
+				commit_seq: this.#next(scope),
+				audit: { world: scope.world, time: this.clock.now().toISOString() },
+			});
 		});
 		const ref = JSON.parse(operation.result) as {
 			id: string;
@@ -665,7 +756,12 @@ export class MaterialStore {
 			commit_seq: string;
 		};
 		if (operation.replayed) this.#personRevision(scope, ref.id, ref.revision);
-		return { ...ref, replayed: operation.replayed };
+		return {
+			id: ref.id,
+			revision: ref.revision,
+			commit_seq: ref.commit_seq,
+			replayed: operation.replayed,
+		};
 	}
 	#reviewed(id: string): boolean {
 		return Boolean(
@@ -1092,6 +1188,11 @@ export class MaterialStore {
 		const people = new Set(dependent.filter((row) => row.revision === 1).map((row) => row.id));
 		return {
 			person_ids: [...people],
+			setting_versions: this.settings.affected(
+				scope,
+				new Set(episodes.keys()),
+				new Set(source_ids),
+			),
 			person_reviews: dependent.filter((row) => !people.has(row.id)),
 			source_ids,
 			episodes: [...episodes]
@@ -1135,6 +1236,7 @@ export class MaterialStore {
 			if (preview.preview_token !== input.preview_token)
 				throw new MaterialError("STALE_PREVIEW");
 			const deleted = new Set(preview.source_ids);
+			this.settings.erase(scope, preview.setting_versions);
 			for (const id of preview.person_ids)
 				this.#db.prepare("DELETE FROM people WHERE id=?").run(id);
 			for (const review of preview.person_reviews) {

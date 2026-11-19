@@ -8,6 +8,24 @@
 
 删除预览中的 person_ids 列出建档依据被删除而须整体移除的档案，person_reviews 列出其他档案中受影响的单次回顾。删除后者会清除正文和该次的全部引用，保留修订序号。如果当前判断被移除，旧判断仍可作为历史读取，当前印象置空，直到角色再次形成判断。
 
+## 角色与世界设定
+
+客户端开始角色对话时调用 `memory_settings({})`，将 `settings` 纳入本轮上下文。`owner_decisions` 单独返回主人拒绝或撤销过的模型判断。读取范围由运行配置决定；同一空间内角色设定跨世界生效，世界设定只在对应世界生效。
+
+先保存或找到经历，再调用 `memory_review` 提议一条设定变化。例如：
+
+```json
+{
+	"operation_id": "discover-cooking",
+	"base_seq": "12",
+	"setting": { "target": "character", "title": "爱好", "body": "最近喜欢为朋友做饭。" },
+	"reason": "几次聚会都是我主动准备晚餐。",
+	"episodes": [{ "id": "经历ID", "revision": 1 }]
+}
+```
+
+用当前 `memory_status().snapshot_seq` 替换示例序号。修订时在 `setting` 中附上当前设定的 `id` 和 `expected_version`（取自 `memory_settings` 返回的 `version`）。`target` 可取 `character` 或 `world`。`dry_run: true` 只预览。新设定和主人维护的设定返回 `proposed`，经主人确认后生效；已有自主设定返回 `unreviewed` 并立即生效。一个请求处理一条设定，重试使用相同的操作 ID 和提案。确认、拒绝、修改权限和撤销在查看器中完成。删除来源时，预览的 `setting_versions` 包含将一并清除的派生设定版本。
+
 ## 检索与索引
 
 启用 embedding 后，memory_review 成功保存经历或人物回顾就会触发后台索引。预览和无效提案不会触发。memory_review({}) 或省略 arguments 表示直接结束回顾并触发当前作用域的索引，不写入经历。最多等待 1 秒，已结束时返回 indexing.state（completed、disabled 或 stopped），停止原因见 indexing.reason。仍在运行时返回 running，后台继续索引；通过 memory_status 的 retrieval.pending_chunks 查看剩余片段数，retrieval.indexing 查看任务状态和原因。MCP 空闲计时从服务启动或最后一个并发工具调用结束时开始，默认 120 分钟，可用 runtime.json 的 index_idle_minutes 调整。空闲任务遇到工具调用会在批次边界暂停，回顾触发的索引持续至完成或遇到错误。索引会将待处理的原文和经历片段发送到配置的 embedding 服务，受每日请求预算约束。memory_recall 默认 hybrid，有可用向量时发送查询文本；mode=lexical、空查询或没有已完成向量时不发送查询文本。

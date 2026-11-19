@@ -1,5 +1,6 @@
 import { importMedia } from "@/storage/media.js";
 import reviewPersonSchema from "@/contracts/schemas/review-person.json" with { type: "json" };
+import settingSchema from "@/contracts/schemas/review-setting.json" with { type: "json" };
 import type { ReviewIndex } from "@/retrieval/review-index.js";
 import { EmbeddingError } from "@/providers/embedding.js";
 import previewDeleteSchema from "@/contracts/schemas/preview-delete.json" with { type: "json" };
@@ -22,11 +23,12 @@ const reviewSchema = {
 	properties: {
 		...reviewEpisodeSchema.properties,
 		...reviewPersonSchema.properties,
+		...settingSchema.properties,
 		dry_run: dryRun,
 	},
 	oneOf: [
 		{ type: "object", maxProperties: 0 },
-		...[reviewEpisodeSchema, reviewPersonSchema].map((schema) => ({
+		...[reviewEpisodeSchema, reviewPersonSchema, settingSchema].map((schema) => ({
 			...schema,
 			properties: { ...schema.properties, dry_run: dryRun },
 		})),
@@ -42,10 +44,25 @@ export function createMemoryServer(memory: {
 }) {
 	const server = new Server(
 		{ name: "Labradorite", version: "0.0.0" },
-		{ capabilities: { tools: {} } },
+		{
+			capabilities: { tools: {} },
+			instructions:
+				"At the start of a character conversation, call memory_settings to load effective character and world settings. Consider owner decisions when proposing changes.",
+		},
 	);
 	server.setRequestHandler(ListToolsRequestSchema, async () => ({
 		tools: [
+			{
+				name: "memory_settings",
+				description:
+					"Read effective character and world settings at the start of a conversation. owner_decisions lists rejected or undone judgments separately. To propose a new setting or a change, use memory_review with setting, reason and cited episode versions. Only the owner can approve proposals and choose autonomy in the viewer.",
+				inputSchema: {
+					type: "object" as const,
+					properties: {},
+					additionalProperties: false,
+				},
+				annotations: { readOnlyHint: true },
+			},
 			{
 				name: "memory_people",
 				description:
@@ -112,7 +129,7 @@ export function createMemoryServer(memory: {
 			{
 				name: "memory_review",
 				description:
-					"Read materials with memory_recall/memory_read first. Submit your own review proposal. A successful save starts semantic indexing in the background. Call with {} to finish without a proposal. Waits up to one second for indexing. If indexing.state is running, check memory_status().retrieval.indexing for progress and the final state. Set dry_run=true to preview without writing; omit it or set false to save directly. With source_ids, save or revise an episode grounded in readable materials. Use happen for event time with precision and cited evidence, separately from review. Later mentions of the same event should revise the existing episode; omission preserves its event time. Expressed interpretations require character statements. Include person_review to link a significant person and optionally update their impression atomically. With episodes instead, cite existing episode IDs and revisions to review a person directly. Find candidates with memory_people; create with name and identity or update with id and expected_revision. Omit impression to only link evidence, or supply the complete new judgment. Use snapshot_seq as base_seq and a stable operation_id; reread on conflict.",
+					"Read materials with memory_recall/memory_read first. Submit your own review proposal. A successful save starts semantic indexing in the background. Call with {} to finish without a proposal. Waits up to one second for indexing. If indexing.state is running, check memory_status().retrieval.indexing for progress and the final state. Set dry_run=true to preview without writing; omit it or set false to save directly. With source_ids, save or revise an episode grounded in readable materials. Use happen for event time with precision and cited evidence, separately from review. Later mentions of the same event should revise the existing episode; omission preserves its event time. Expressed interpretations require character statements. Include person_review to link a significant person and optionally update their impression atomically. With setting, reason and episodes, propose one setting change based on existing episode revisions. New and owner-maintained settings need owner approval. For a person review with episodes, cite existing episode IDs and revisions to review a person directly. Find candidates with memory_people; create with name and identity or update with id and expected_revision. Omit impression to only link evidence, or supply the complete new judgment. Use snapshot_seq as base_seq and a stable operation_id; reread on conflict.",
 				inputSchema: reviewSchema,
 			},
 			{
@@ -161,6 +178,10 @@ export function createMemoryServer(memory: {
 		try {
 			let result: unknown;
 			switch (params.name) {
+				case "memory_settings":
+					if (Object.keys(args).length) throw new MaterialError("VALIDATION_ERROR");
+					result = memory.store.settings.context(memory.scope);
+					break;
 				case "memory_people":
 					if (
 						Object.keys(args).some((k) => k !== "query" && k !== "after") ||
@@ -215,6 +236,16 @@ export function createMemoryServer(memory: {
 					}
 					const { dry_run = false, ...proposal } = args;
 					if (typeof dry_run !== "boolean") throw new MaterialError("VALIDATION_ERROR");
+					if (Object.hasOwn(proposal, "setting")) {
+						result = memory.store.reviewSetting(
+							memory.principal,
+							memory.scope,
+							proposal,
+							dry_run,
+						);
+						if (!dry_run) void memory.index.run();
+						break;
+					}
 					const person = Object.hasOwn(proposal, "episodes");
 					if (dry_run) {
 						result = person

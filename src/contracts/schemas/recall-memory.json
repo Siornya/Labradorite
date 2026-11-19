@@ -52,6 +52,7 @@
 		},
 		"before_seq": {
 			"type": "string",
+			"description": "For an empty query, continue after the last returned item's commit_seq. With time_basis=happen, this identifies an episode revision in the same scope; the next page follows its event time, then its commit sequence.",
 			"pattern": "^(0|[1-9][0-9]*)$",
 			"maxLength": 20
 		},

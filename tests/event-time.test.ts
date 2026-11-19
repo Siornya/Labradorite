@@ -146,6 +146,44 @@ test("backfilled events keep occurrence through later mentions, revisions, retry
 	}
 });
 
+test("event browsing pages past backfills, tied dates and unknown dates with the returned cursor", async () => {
+	const store = new MaterialStore(":memory:");
+	try {
+		const source = store.submit("client", scope, material("source")).material;
+		const save = (name: string, date?: string) =>
+			store.reviewEpisode(
+				"client",
+				scope,
+				proposal(store, [source.id], name, date ? point(source.id, date) : undefined),
+			).episode;
+		const december = save("December", "2026-12-01");
+		const unknown = save("no-date");
+		const january = save("January", "2026-01-01");
+		const sameDay = save("later-mention", "2026-01-01");
+		const latestUnknown = save("another-undated-event");
+		const browse = (before_seq?: string) =>
+			store.recallAsync(scope, {
+				query: "",
+				time_basis: "happen",
+				limit: 1,
+				max_bytes: 1024,
+				...(before_seq ? { before_seq } : {}),
+			});
+		let cursor: string | undefined;
+		for (const expected of [december, sameDay, january, latestUnknown, unknown]) {
+			const result = await browse(cursor);
+			const [item] = result.items as { id: string; commit_seq: string }[];
+			assert.equal(item?.id, expected.id);
+			assert.equal(item.commit_seq, expected.commit_seq);
+			cursor = item.commit_seq;
+		}
+		assert.deepEqual((await browse(cursor)).items, []);
+		await assert.rejects(browse(source.commit_seq), { message: "VALIDATION_ERROR" });
+	} finally {
+		store.close();
+	}
+});
+
 test("calendar precision, offsets and intervals use possible overlap without inventing dates", () => {
 	const store = new MaterialStore(":memory:");
 	try {

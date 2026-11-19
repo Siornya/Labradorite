@@ -14,6 +14,9 @@ export interface RecallMemory {
 	to?: string;
 	channel?: string;
 	thread?: string;
+	/**
+	 * For an empty query, continue after the last returned item's commit_seq. With time_basis=happen, this identifies an episode revision in the same scope; the next page follows its event time, then its commit sequence.
+	 */
 	before_seq?: string;
 	/**
 	 * Hybrid when configured; lexical forces local-only retrieval. Empty query never calls embedding.

@@ -93,6 +93,17 @@ export interface Material {
 	context_role?: "historical_background";
 	correction_ids?: string[];
 }
+type BrowsePosition = { seq: string; event_order: number | null };
+
+function compareBrowsePositions(a: BrowsePosition, b: BrowsePosition): number {
+	const aTime = a.event_order ?? -Infinity;
+	const bTime = b.event_order ?? -Infinity;
+	if (aTime !== bTime) return bTime - aTime;
+	const aSeq = BigInt(a.seq);
+	const bSeq = BigInt(b.seq);
+	return aSeq === bSeq ? 0 : aSeq > bSeq ? -1 : 1;
+}
+
 function canonical(value: unknown): string {
 	if (value === null || typeof value !== "object") return JSON.stringify(value);
 	if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -803,13 +814,11 @@ export class MaterialStore {
 		const lexicalHits = new Map(lexical.map((x) => [x.id, x]));
 		const semanticHits = new Map(semantic.map((x) => [x.id, x]));
 		const eligibleIds = new Set<string>();
-		type Candidate = {
+		type Candidate = BrowsePosition & {
 			kind: "material" | "episode";
 			id: string;
-			seq: string;
 			text: string;
 			time: string | null;
-			event_order: number | null;
 			value: Material | Episode | undefined;
 			terms: string[];
 			score: number;
@@ -819,9 +828,24 @@ export class MaterialStore {
 			eligible = 0,
 			matched = 0;
 		const basis = input.time_basis ?? "received_at";
+		let cursor: BrowsePosition | undefined;
+		if (input.before_seq) {
+			cursor = { seq: input.before_seq, event_order: null };
+			if (basis === "happen") {
+				// Use the returned revision, even if the episode has since been edited.
+				const row = this.#db
+					.prepare(
+						"SELECT body FROM episodes WHERE space=? AND world=? AND json_extract(body,'$.commit_seq')=?",
+					)
+					.get(scope.space, scope.world, input.before_seq) as
+					| { body: string }
+					| undefined;
+				if (!row) throw new MaterialError("VALIDATION_ERROR");
+				cursor.event_order = eventOrder(readEpisodeBody(row.body).happen);
+			}
+		}
 		const consider = (kind: Candidate["kind"], value: Material | Episode) => {
 			scanned++;
-			if (input.before_seq && BigInt(value.commit_seq) >= BigInt(input.before_seq)) return;
 			const isMaterial = kind === "material",
 				m = value as Material,
 				ep = value as Episode;
@@ -835,6 +859,11 @@ export class MaterialStore {
 			// Authored time and channel are material metadata; never invent an episode timestamp or channel.
 			if (input.channel && (!isMaterial || m.channel !== input.channel)) return;
 			if ((basis === "happen" || basis === "review") && isMaterial) return;
+			const position = {
+				seq: value.commit_seq,
+				event_order: basis === "happen" ? eventOrder(ep.happen) : null,
+			};
+			if (cursor && compareBrowsePositions(position, cursor) <= 0) return;
 			const occurrence = !isMaterial ? eventRange(ep.happen) : null;
 			const time =
 				basis === "happen"
@@ -866,27 +895,14 @@ export class MaterialStore {
 			top.push({
 				kind,
 				id: value.id,
-				seq: value.commit_seq,
+				...position,
 				text,
 				time,
-				event_order: basis === "happen" ? eventOrder(ep.happen) : null,
 				value: q ? undefined : value,
 				terms,
 				score,
 			});
-			if (!q)
-				top.sort(
-					(a, b) =>
-						b.score - a.score ||
-						(basis === "happen"
-							? (b.event_order ?? -Infinity) - (a.event_order ?? -Infinity)
-							: 0) ||
-						(BigInt(a.seq) > BigInt(b.seq)
-							? -1
-							: BigInt(a.seq) < BigInt(b.seq)
-								? 1
-								: a.id.localeCompare(b.id)),
-				);
+			if (!q) top.sort(compareBrowsePositions);
 			if (!q && top.length > limit + 1) top.pop();
 		};
 		if (q) {
@@ -1034,11 +1050,15 @@ export class MaterialStore {
 				output.items.push({
 					kind: item.kind,
 					id: item.id,
+					commit_seq: q ? undefined : item.seq,
 					stale: corrections.length > 0,
 					requires_expansion: true,
 				});
-				if (Buffer.byteLength(JSON.stringify(output), "utf8") > maxBytes)
+				if (Buffer.byteLength(JSON.stringify(output), "utf8") > maxBytes) {
 					output.items.pop();
+					output.diagnostics.returned = output.items.length;
+					if (!q) break;
+				}
 				output.diagnostics.returned = output.items.length;
 			}
 		}

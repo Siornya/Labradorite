@@ -1,13 +1,57 @@
 import sharp from "sharp";
+import Database from "better-sqlite3";
+import { checksum } from "@/storage/media.js";
 import { test } from "vite-plus/test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+
+test("restore rejects a checksummed backup with an unsupported database version", async () => {
+	const backup = mkdtempSync(join(tmpdir(), "restore-version-"));
+	try {
+		const database = join(backup, "memory.db");
+		const db = new Database(database);
+		try {
+			db.exec("CREATE TABLE materials (body TEXT); PRAGMA user_version=3");
+		} finally {
+			db.close();
+		}
+		writeFileSync(
+			join(backup, "manifest.json"),
+			JSON.stringify({
+				format: 1,
+				space: "home",
+				character: "reader",
+				world: "real",
+				sha256: await checksum(database),
+			}),
+		);
+		const destination = join(backup, "restored");
+		assert.throws(
+			() =>
+				execFileSync(
+					process.execPath,
+					[
+						resolve("node_modules/vite-plus/bin/vpx"),
+						resolve("scripts/library.ts"),
+						"restore",
+						backup,
+						destination,
+					],
+					{ stdio: "pipe" },
+				),
+			/Expected a v4 memory database, found version 3/,
+		);
+		assert.equal(existsSync(destination), false);
+	} finally {
+		rmSync(backup, { recursive: true, force: true });
+	}
+});
 
 test("MCP album, Markdown export and restored instance retain the original media and episode sources", async () => {
 	const root = mkdtempSync(join(tmpdir(), "memory-album-"));

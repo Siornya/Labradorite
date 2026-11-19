@@ -33,6 +33,11 @@ function quote(text: string) {
 		.map((line) => "> " + line)
 		.join("\n");
 }
+function checkDatabaseVersion(db: Database.Database) {
+	const version = db.pragma("user_version", { simple: true });
+	if (version !== 4)
+		throw new Error(`Expected a v4 memory database, found version ${String(version)}`);
+}
 async function run() {
 	if (command === "restore") {
 		const manifest = JSON.parse(await readFile(join(input!, "manifest.json"), "utf8"));
@@ -49,6 +54,7 @@ async function run() {
 			throw new Error("Database checksum mismatch");
 		const db = new Database(database, { readonly: true });
 		try {
+			checkDatabaseVersion(db);
 			if (db.pragma("integrity_check", { simple: true }) !== "ok")
 				throw new Error("Invalid database");
 			await mkdir(database + ".media");
@@ -85,8 +91,7 @@ async function run() {
 		await source.backup(snapshot);
 		const db = new Database(snapshot, { readonly: true });
 		try {
-			const version = db.pragma("user_version", { simple: true });
-			if (version !== 4) throw new Error("Expected a v4 memory database");
+			checkDatabaseVersion(db);
 			const assets = join(destination, "media");
 			await mkdir(assets);
 			if (command === "backup") {

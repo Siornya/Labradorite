@@ -16,4 +16,6 @@ vpr library restore /path/to/new-backup /path/to/new-data
 vpr setup /path/to/new-data
 ```
 
+恢复仅支持 v4 记忆库。如果备份中的数据库版本不受支持，命令会报告实际版本并清理本次新建的目标目录。
+
 Markdown 是可读副本，在外部修改它只会改变导出文件。搬迁服务时使用完整备份，并让客户端加载恢复后的 MCP 配置。

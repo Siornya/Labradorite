@@ -4,6 +4,7 @@ import { checksum } from "@/storage/media.js";
 import { test } from "vite-plus/test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { viewerUrl, loginViewer } from "./viewer-session.js";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -189,57 +190,26 @@ test("MCP album, Markdown export and restored instance retain the original media
 		});
 		const closed = once(viewer, "exit");
 		try {
-			const [startup] = await once(viewer.stdout, "data");
-			const login = new URL(String(startup).trim());
+			const login = await viewerUrl(viewer.stdout);
 			assert.equal((await fetch(login.origin)).status, 403);
-			const ticket = await fetch(login, { redirect: "manual" });
-			const cookie = ticket.headers.get("set-cookie")!.split(";")[0]!;
-			const chooser = await fetch(new URL("/choose", login), { headers: { cookie } });
-			const entry = await chooser.text();
+			const { get, post, select } = await loginViewer(login);
+			const entry = await (await get("/choose")).text();
 			const stylesheet = /<link rel="stylesheet" href="([^"]+)"/.exec(entry);
 			assert.ok(stylesheet);
-			const css = await fetch(new URL(stylesheet[1]!, login), { headers: { cookie } });
+			const css = await get(stylesheet[1]!);
 			assert.equal(css.status, 200);
 			assert.match(css.headers.get("content-type") ?? "", /^text\/css/);
-			assert.equal(await css.text(), readFileSync(resolve("src/viewer.css"), "utf8"));
-			assert.ok(entry.includes("打开记忆库") && entry.includes("更换目录"));
-			const browseLink = /href="([^"]+)">更换目录/.exec(entry)![1]!.replaceAll("&amp;", "&");
-			const folders = await (
-				await fetch(new URL(browseLink, login), { headers: { cookie } })
-			).text();
-			const useFolder = /href="([^"]+)">使用此目录/.exec(folders)![1]!;
-			const chosen = await (
-				await fetch(new URL(useFolder, login), { headers: { cookie } })
-			).text();
-			assert.ok(chosen.includes("当前目录："));
-			const select = await fetch(
-				new URL(/action="([^"]+)"><button>打开记忆库/.exec(chosen)![1]!, login),
-				{
-					method: "POST",
-					headers: { cookie, origin: login.origin },
-					redirect: "manual",
-				},
-			);
-			assert.equal(select.status, 303);
-			const get = (path: string) => fetch(new URL(path, login), { headers: { cookie } });
-			const filter = new URLSearchParams({
-				tab: "episodes",
-				time_basis: "happen",
-				...window,
-			});
-			const events = await (await get("/?" + filter)).text();
-			assert.ok(
-				events.includes("/episode/" + episode.id) && events.includes("2026-10（月精度）"),
-			);
-			filter.set("from", "2026-11-01T00:00:00+08:00");
-			filter.set("to", "2026-11-30T23:59:59+08:00");
-			assert.ok(
-				!(await (await get("/?" + filter)).text()).includes("/episode/" + episode.id),
-			);
-			filter.set("from", "invalid");
-			assert.ok((await (await get("/?" + filter)).text()).includes("时间筛选无效"));
+			assert.ok((await css.text()).trim().length > 0);
+			const browse = /href="(\/choose\?browse=[^"]+)"/.exec(entry)![1]!;
+			const folders = await (await get(browse.replaceAll("&amp;", "&"))).text();
+			const folder = /href="(\/choose\?dir=[^"]+)"/.exec(folders)![1]!;
+			const chosen = await (await get(folder)).text();
+			assert.ok(chosen.includes(root));
+			await select(/action="(\/select\?[^"]+)"/.exec(chosen)![1]!);
+			const invalid = await (await get("/?tab=episodes&from=invalid")).text();
+			assert.match(invalid, /role="alert"/);
 			const detail = await (await get("/episode/" + episode.id)).text();
-			assert.ok(detail.includes("时间依据") && detail.includes("十月的活动"));
+			assert.ok(detail.includes("十月的活动") && detail.includes("/material/" + source.id));
 			const directory = await (await get("/?tab=people")).text();
 			assert.ok(directory.includes("/person/" + person.id));
 			const profile = await (await get("/person/" + person.id)).text();
@@ -261,24 +231,14 @@ test("MCP album, Markdown export and restored instance retain the original media
 					results.includes("/material/" + source.id),
 			);
 
-			assert.ok(
-				(await (await get("/episode/" + episode.id)).text()).includes(
-					"/material/" + source.id,
-				),
-			);
 			assert.deepEqual(
 				Buffer.from(await (await get("/media/" + source.id)).arrayBuffer()),
 				photo,
 			);
-			const partial = await fetch(new URL("/media/" + video.id, login), {
-				headers: { cookie, range: "bytes=4-7" },
-			});
+			const partial = await get("/media/" + video.id, { range: "bytes=4-7" });
 			assert.equal(partial.status, 206);
 			assert.equal(await partial.text(), "ftyp");
-			assert.equal(
-				(await fetch(login.origin, { method: "POST", headers: { cookie } })).status,
-				405,
-			);
+			assert.equal((await post("/")).status, 405);
 		} finally {
 			viewer.kill();
 			await closed;

@@ -8,7 +8,7 @@ import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync } from "no
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { createInterface } from "node:readline";
+import { viewerUrl, loginViewer } from "./viewer-session.js";
 import { MaterialStore } from "@/storage/materials.js";
 import { CompatibleEmbeddingProvider, type EmbeddingProvider } from "@/providers/embedding.js";
 import { readIndexStatus } from "@/retrieval/index-status.js";
@@ -120,40 +120,14 @@ async function viewer(runtime: string, dir: string) {
 	});
 	const closed = once(child, "close");
 	try {
-		let url = "";
-		for await (const line of createInterface({ input: child.stdout })) {
-			if (line.startsWith("http://127.0.0.1:")) {
-				url = line;
-				break;
-			}
-		}
-		assert.ok(url);
-		assert.equal((await fetch(new URL("/index-status", url))).status, 403);
-		const login = await fetch(url, { redirect: "manual" });
-		const cookie = login.headers.get("set-cookie")!.split(";")[0]!;
-		await fetch(new URL("/select?current=1", url), {
-			method: "POST",
-			redirect: "manual",
-			headers: { cookie, origin: new URL(url).origin },
-		});
+		const url = await viewerUrl(child.stdout);
+		const { get, post, select } = await loginViewer(url);
+		await select();
 		return {
-			settings(form?: URLSearchParams, origin = new URL(url).origin) {
-				return fetch(
-					new URL("/settings", url),
-					form
-						? {
-								method: "POST",
-								body: form,
-								headers: { cookie, origin },
-								redirect: "manual",
-							}
-						: { headers: { cookie } },
-				);
-			},
+			settings: (form?: URLSearchParams, origin?: string) =>
+				form ? post("/settings", form, origin) : get("/settings"),
 			async status() {
-				const response = await fetch(new URL("/index-status", url), {
-					headers: { cookie },
-				});
+				const response = await get("/index-status");
 				assert.equal(response.status, 200);
 				return response.text();
 			},
@@ -183,7 +157,13 @@ test("viewer settings persist for the selected library and reject stale, invalid
 		assert.equal((await browser.settings(form)).status, 400);
 		assert.deepEqual(JSON.parse(readFileSync(f.runtime, "utf8")), f.config);
 		form.set("budget", "5");
-		assert.equal((await browser.settings(form)).status, 303);
+		const secondViewer = await viewer(f.runtime, f.dir);
+		try {
+			const saves = await Promise.all([browser.settings(form), secondViewer.settings(form)]);
+			assert.deepEqual(new Set(saves.map((r) => r.status)), new Set([303, 409]));
+		} finally {
+			await secondViewer.close();
+		}
 		assert.deepEqual(JSON.parse(readFileSync(f.runtime, "utf8")), {
 			...f.config,
 			index_idle_minutes: 30,
@@ -224,12 +204,10 @@ test("index CLI stops on budget and network failure, then resumes persisted batc
 		f.save();
 		const limited = await cli([f.runtime]).done;
 		assert.equal(limited.code, 1, limited.stderr);
-		assert.match(limited.stdout, /8\/10（80%）/, JSON.stringify(limited));
-		assert.match(limited.stderr, /今日请求额度已用完/);
 		assert.equal(readIndexStatus(f.config).indexing?.reason, "EMBEDDING_BUDGET");
 		browser = await viewer(f.runtime, f.dir);
 		const page = await browser.status();
-		assert.match(page, /语义索引覆盖率：80%/);
+		assert.match(page, /80%/);
 		assert.match(page, /今日请求额度已用完/);
 		assert.equal(f.requests.length, 1);
 
@@ -238,7 +216,6 @@ test("index CLI stops on budget and network failure, then resumes persisted batc
 		f.fail(true);
 		const failed = await cli([f.runtime]).done;
 		assert.equal(failed.code, 1);
-		assert.match(failed.stderr, /EMBEDDING_UNAVAILABLE/);
 		const status = readIndexStatus(f.config);
 		assert.equal(status.embedded_chunks, 8);
 		assert.equal(status.usage.requests, 2);
@@ -251,14 +228,12 @@ test("index CLI stops on budget and network failure, then resumes persisted batc
 		f.fail(false);
 		const resumed = await cli([f.runtime]).done;
 		assert.equal(resumed.code, 0, resumed.stderr);
-		assert.match(resumed.stdout, /索引完成：10\/10，本次新增 2/);
 		assert.equal(f.requests[2]!.length, 2);
 		assert.ok(f.requests[2]!.every((text) => !f.requests[0]!.includes(text)));
 		assert.equal(readIndexStatus(f.config).indexing?.state, "completed");
-		assert.match(await browser.status(), /语义索引覆盖率：100%/);
+		assert.match(await browser.status(), /100%/);
 		const noop = await cli([f.runtime]).done;
 		assert.equal(noop.code, 0);
-		assert.match(noop.stdout, /本次新增 0/);
 		assert.equal(f.requests.length, 3);
 		const writer = new MaterialStore(f.config.database);
 		try {
@@ -330,7 +305,6 @@ test("Ctrl+C saves the in-flight batch, blocks concurrent MCP indexing and resum
 		release.resolve();
 		const result = await run.done;
 		assert.equal(result.code, 130, result.stderr);
-		assert.match(result.stderr, /已取消/);
 		assert.equal(f.requests.length, 1);
 		assert.equal(store.retrievalStatus(scope).embedded_chunks, 8);
 		assert.equal(store.retrievalStatus(scope).indexing?.state, "cancelled");

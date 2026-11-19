@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import Database from "better-sqlite3";
 import { renameSync, rmSync, writeFileSync } from "node:fs";
 import { loadRuntimeConfig, type RuntimeConfig } from "./runtime-config.js";
 
@@ -12,9 +13,24 @@ export function libraryMatches(a: RuntimeConfig, b: RuntimeConfig) {
 }
 
 export function settingsPage(path: string, selected: RuntimeConfig, form?: URLSearchParams) {
+	if (!form) return readOrSave(path, selected);
+	// A stable SQLite lock file serializes writers and releases its lock on process exit.
+	try {
+		const lock = new Database(path + ".lock");
+		try {
+			return lock.transaction(() => readOrSave(path, selected, form)).immediate();
+		} finally {
+			lock.close();
+		}
+	} catch {
+		return { status: 503, error: "暂时无法锁定运行配置，请稍后重试。" };
+	}
+}
+
+function readOrSave(path: string, selected: RuntimeConfig, form?: URLSearchParams) {
 	const message = (status: number, text: string) => ({
 		status,
-		html: `<h1>设置</h1><p role="alert">${text}</p><p><a href="/settings">重新加载设置</a> · <a href="/choose">选择记忆库</a></p>`,
+		error: text,
 	});
 	let current: RuntimeConfig;
 	try {
@@ -58,15 +74,12 @@ export function settingsPage(path: string, selected: RuntimeConfig, form?: URLSe
 		} finally {
 			rmSync(temp, { force: true });
 		}
-		return { status: 303, html: "" };
+		return { status: 303 };
 	}
 	return {
 		status: 200,
-		html: `<h1>设置</h1><h2>语义索引</h2><form class="settings" method="post" action="/settings">
-	<input type="hidden" name="revision" value="${revision}">
-	<label>空闲索引时长（分钟）<input required type="number" min="1" max="35791" name="idle" value="${current.index_idle_minutes ?? 120}"></label>
-	<small>最后一次 MCP 工具调用结束后，连续空闲达到此时长时开始索引。默认 120 分钟。</small>
-	${current.embedding ? `<label>每日请求上限（次）<input required type="number" min="0" max="100000" name="budget" value="${current.embedding.max_requests_per_day}"></label><small>额度由整个数据库共享，按 UTC 日期重置。</small>` : "<p>当前使用全文检索。启用 embedding 后，空闲索引时长才会生效。</p>"}
-	<p>保存后，请重启此记忆库的 MCP 服务以应用设置。</p><button>保存设置</button></form>`,
+		revision,
+		idle: current.index_idle_minutes ?? 120,
+		budget: current.embedding?.max_requests_per_day,
 	};
 }

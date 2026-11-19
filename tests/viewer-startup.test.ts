@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { createInterface } from "node:readline";
+import { viewerUrl, loginViewer } from "./viewer-session.js";
 import { mkdtempSync, writeFileSync, rmSync, readdirSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
@@ -69,27 +69,12 @@ test("viewer filters and orders event times before pagination, then cleans up on
 		windowsHide: true,
 	});
 	const closed = once(child, "close");
-	const lines = createInterface({ input: child.stdout! });
 	const timer = setTimeout(() => child.kill("SIGKILL"), 8000);
 	try {
-		let url = "";
-		for await (const line of lines) {
-			if (line.startsWith("http://127.0.0.1:")) {
-				url = line;
-				break;
-			}
-		}
-		assert.ok(url);
-		const login = await fetch(url, { redirect: "manual" });
-		const cookie = login.headers.get("set-cookie")!.split(";")[0]!;
-		const selected = await fetch(new URL("/select?current=1", url), {
-			method: "POST",
-			redirect: "manual",
-			headers: { cookie, origin: new URL(url).origin },
-		});
-		assert.equal(selected.status, 303);
-		const get = async (path: string) =>
-			(await fetch(new URL(path, url), { headers: { cookie } })).text();
+		const url = await viewerUrl(child.stdout!);
+		const session = await loginViewer(url);
+		await session.select();
+		const get = async (path: string) => (await session.get(path)).text();
 		const first = await get("/?tab=episodes");
 		assert.ok(first.includes(ids.get(31)!) && first.includes(ids.get(30)!));
 		assert.ok(first.indexOf(ids.get(31)!) < first.indexOf(ids.get(30)!));
@@ -118,6 +103,22 @@ test("viewer filters and orders event times before pagination, then cleans up on
 		assert.ok(next);
 		const last = await get(next[1]!.replaceAll("&amp;", "&"));
 		assert.ok(last.includes(ids.get(1)!) && !last.includes(ids.get(0)!));
+		const log = await get("/reviews");
+		const record = /href="(\/reviews\/[a-f0-9]{64})"/.exec(log)![1]!;
+		assert.match(log, /待审阅/);
+		const review = await get(record);
+		assert.match(review, /一月的日记/);
+		const selection = /name="selection" value="([^"]+)"/.exec(review)![1]!;
+		const post = (action: string, origin = url.origin, selected = selection) =>
+			session.post(record, new URLSearchParams({ action, selection: selected }), origin);
+		assert.equal((await post("undo", "https://example.invalid")).status, 403);
+		assert.equal((await post("undo", undefined, "stale")).status, 409);
+		assert.equal((await post("check")).status, 303);
+		assert.match(await get(record), /已审阅/);
+		assert.equal((await post("undo")).status, 303);
+		assert.match(await get(record), /已撤销/);
+		assert.equal((await session.get("/episode/" + ids.get(0))).status, 404);
+		assert.match(await get("/material/" + source.id), /一月的日记/);
 		if (process.platform === "win32") child.send("terminate");
 		else child.kill("SIGTERM");
 		const [code] = await closed;
@@ -149,21 +150,14 @@ test("service starts a headless viewer by default and closes it with the MCP tra
 		windowsHide: true,
 	});
 	const closed = once(child, "close");
-	const lines = createInterface({ input: child.stderr });
+	const login = viewerUrl(child.stderr);
 	let protocol = "";
 	child.stdout.on("data", (chunk) => {
 		protocol += chunk;
 	});
 	const timer = setTimeout(() => child.kill(), 8000);
 	try {
-		let url = "";
-		for await (const line of lines) {
-			if (line.startsWith("http://127.0.0.1:")) {
-				url = line;
-				break;
-			}
-		}
-		assert.ok(url, "Expected a login link on stderr");
+		const url = await login;
 		const cli = execFileSync(
 			process.execPath,
 			[resolve("node_modules/vite-plus/bin/vpx"), resolve("scripts/viewer-url.js")],
@@ -172,7 +166,7 @@ test("service starts a headless viewer by default and closes it with the MCP tra
 				env: { ...process.env, HOME: dir, USERPROFILE: dir },
 			},
 		);
-		assert.ok(cli.includes(url) && cli.includes("ssh -N -L"));
+		assert.ok(cli.includes(url.href) && cli.includes("ssh -N -L"));
 		assert.equal((await fetch(url, { redirect: "manual" })).status, 303);
 		child.stdin.end();
 		await closed;

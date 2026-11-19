@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test, vi } from "vite-plus/test";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { createInterface } from "node:readline";
+import { viewerUrl, loginViewer } from "./viewer-session.js";
 import type { Readable } from "node:stream";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -84,12 +84,7 @@ test("stdio MCP indexes through compatible HTTP embeddings and returns source-ba
 				USERPROFILE: directory,
 			} as Record<string, string>,
 		});
-		const viewerUrl = (async () => {
-			for await (const line of createInterface({ input: transport.stderr as Readable })) {
-				if (line.startsWith("http://127.0.0.1:")) return line;
-			}
-			throw new Error("Viewer did not start");
-		})();
+		const managedUrl = viewerUrl(transport.stderr as Readable);
 		await client.connect(transport);
 		const call = async (name: string, args: Record<string, unknown>) => {
 			const result = await client.callTool({ name, arguments: args });
@@ -134,35 +129,22 @@ test("stdio MCP indexes through compatible HTTP embeddings and returns source-ba
 		});
 		const closed = once(viewer, "exit");
 		try {
-			const [output] = await once(viewer.stdout, "data");
-			for (const address of [await viewerUrl, String(output).trim()]) {
-				const login = new URL(address);
-				const ticket = await fetch(login, { redirect: "manual" });
-				const cookie = ticket.headers.get("set-cookie")!.split(";")[0]!;
-				await fetch(new URL("/select?current=1", login), {
-					method: "POST",
-					headers: { cookie, origin: login.origin },
-					redirect: "manual",
-				});
-				const beforeStatus: number = inputs.length;
-				const status = await (
-					await fetch(new URL("/index-status", login), { headers: { cookie } })
-				).text();
-				assert.match(status, /语义索引覆盖率：100%/);
-				assert.match(status, /最近任务：已完成/);
-				assert.equal(inputs.length, beforeStatus, "Viewing status must not call embedding");
+			const managed = await managedUrl;
+			for (const login of [managed, await viewerUrl(viewer.stdout)]) {
+				const { get, select } = await loginViewer(login);
+				await select();
 				const search = new URL("/search", login);
 				search.searchParams.set("q", "脚踏出游");
-				const result = await (await fetch(search, { headers: { cookie } })).text();
-				const managed = address === (await viewerUrl);
-				assert.equal(result.includes("/material/" + receipt.material.id), managed);
-				assert.equal(result.includes("混合检索"), managed);
-				if (!managed) assert.ok(result.includes("语义检索不可用"));
+				const result = await (await get(search)).text();
+				const isManaged = login === managed;
+				assert.equal(result.includes("/material/" + receipt.material.id), isManaged);
+				assert.equal(result.includes('value="hybrid"'), isManaged);
+				if (!isManaged) assert.ok(result.includes("语义检索不可用"));
 				search.searchParams.set("mode", "lexical");
-				const local = await (await fetch(search, { headers: { cookie } })).text();
+				const local = await (await get(search)).text();
 				assert.ok(!local.includes("/material/" + receipt.material.id));
 				search.searchParams.set("q", "自行车");
-				const matched = await (await fetch(search, { headers: { cookie } })).text();
+				const matched = await (await get(search)).text();
 				assert.ok(matched.includes("/material/" + receipt.material.id));
 			}
 		} finally {

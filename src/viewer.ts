@@ -1,3 +1,21 @@
+import { h, type Component, type VNode } from "vue";
+import { renderToString } from "vue/server-renderer";
+import ViewerLayout from "./views/ViewerLayout.vue";
+import LibraryEntry from "./views/LibraryEntry.vue";
+import DirectoryPicker from "./views/DirectoryPicker.vue";
+import IndexStatus from "./views/IndexStatus.vue";
+import MemoryList from "./views/MemoryList.vue";
+import PeopleList from "./views/PeopleList.vue";
+import PersonDetail from "./views/PersonDetail.vue";
+import EpisodeDetail from "./views/EpisodeDetail.vue";
+import MaterialDetail from "./views/MaterialDetail.vue";
+import ReviewList from "./views/ReviewList.vue";
+import ReviewDetail from "./views/ReviewDetail.vue";
+import SettingList from "./views/SettingList.vue";
+import SettingDetail from "./views/SettingDetail.vue";
+import { effectiveSettings } from "./storage/settings.js";
+import SearchResults from "./views/SearchResults.vue";
+import ViewerSettings from "./views/ViewerSettings.vue";
 import { libraryMatches, settingsPage } from "./viewer-settings.js";
 import { readEpisodeBody } from "./storage/episode-body.js";
 import {
@@ -15,12 +33,12 @@ import { DatabaseSync } from "node:sqlite";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { randomBytes } from "node:crypto";
-import { createServer } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
 import { createReadStream, readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { loadRuntimeConfig } from "./runtime-config.js";
 import { defaultDataDirectory } from "./data-directory.js";
-import type { Material } from "./storage/materials.js";
+import { MaterialError, MaterialStore, type Material } from "./storage/materials.js";
 import { indexReason, readIndexStatus } from "./retrieval/index-status.js";
 
 const args = process.argv.slice(2);
@@ -39,7 +57,7 @@ if (positional.length > 2 || !/^\d+$/.test(portText) || Number(portText) > 65535
 	throw new Error("Usage: Labradorite Viewer [runtime.json] [port] [--open]");
 const managed = !!process.send;
 const standaloneNotice =
-	"查看器未通过 MCP 服务启动，仅支持浏览和全文检索，语义检索不可用。推荐通过已配置 Labradorite 的 MCP 客户端启动记忆服务，使用服务自动打开的查看器；也可在项目目录运行 vpr viewer:url 获取该服务的登录链接。接入步骤见 README。";
+	"查看器未通过 MCP 服务启动，支持浏览、人工审阅和全文检索，语义检索不可用。推荐通过已配置 Labradorite 的 MCP 客户端启动记忆服务，使用服务自动打开的查看器；也可在项目目录运行 vpr viewer:url 获取该服务的登录链接。接入步骤见 README。";
 if (!managed) console.error(standaloneNotice);
 const searchLibrary = managed
 	? createSearchClient()
@@ -51,26 +69,30 @@ const episodeFrom =
 	" FROM episodes e JOIN spaces s ON s.id=e.space WHERE e.space=? AND e.world=? AND s.character=?";
 const latest = " AND e.revision=(SELECT MAX(x.revision) FROM episodes x WHERE x.id=e.id)";
 type Row = { body: string };
-const escape = (value: string) =>
-	value.replace(
-		/[&<>"']/g,
-		(c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
-	);
 const names = { episodes: "经历", people: "人物档案", album: "相册", materials: "材料" };
 type Tab = keyof typeof names;
-function layout(tab: Tab | "index" | "settings" | null, content: string) {
-	const searchForm = tab
-		? `<form action="/search"><input type="search" name="q" aria-label="搜索整个记忆库" maxlength="512" placeholder="搜索经历、人物、材料和相册" required><select name="mode" aria-label="检索方式">${managed ? '<option value="hybrid">混合检索</option>' : ""}<option value="lexical">仅本地全文</option></select><button>全库搜索</button></form>`
-		: "";
-	const tabs =
-		Object.entries(names)
-			.map(
-				([key, label]) =>
-					`<a ${key === tab ? 'aria-current="page"' : ""} href="/?tab=${key}">${label}</a>`,
-			)
-			.join("") +
-		`<a href="/index-status" ${tab === "index" ? 'aria-current="page"' : ""}>索引状态</a><a href="/settings" ${tab === "settings" ? 'aria-current="page"' : ""}>设置</a>`;
-	return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Labradorite · 记忆库</title><link rel="stylesheet" href="/viewer.css"><header><strong>Labradorite</strong><nav>${tab ? tabs + ' <a href="/choose">切换记忆库</a>' : ""}</nav></header><main>${managed || !tab ? "" : `<p role="status">${standaloneNotice}</p>`}${searchForm}${content}</main></html>`;
+const links = [
+	...Object.entries(names).map(([key, label]) => [key, label, "/?tab=" + key]),
+	["traits", "设定", "/traits"],
+	["reviews", "回顾记录", "/reviews"],
+	["index", "索引状态", "/index-status"],
+	["settings", "设置", "/settings"],
+];
+function page(
+	tab: Tab | "index" | "settings" | "traits" | "reviews" | null,
+	component: Component,
+	props: object,
+) {
+	return h(
+		ViewerLayout,
+		{ tab, managed, links, standaloneNotice },
+		{ default: () => h(component, props) },
+	);
+}
+async function sendPage(res: ServerResponse, view: VNode, status = 200) {
+	const html = await renderToString(view);
+	res.writeHead(status, { "content-type": "text/html; charset=utf-8" });
+	res.end("<!doctype html>" + html);
 }
 function openLibrary(path: string) {
 	const config = loadRuntimeConfig(path);
@@ -90,16 +112,18 @@ function openLibrary(path: string) {
 		try {
 			current = loadRuntimeConfig(path);
 		} catch {
-			return layout(
-				"index",
-				'<h1>索引状态</h1><p>无法读取运行配置，请检查 runtime.json 后<a href="/index-status">刷新状态</a>。</p>',
-			);
+			return page("index", IndexStatus, {
+				error: "无法读取运行配置，请检查 runtime.json 后",
+				href: "/index-status",
+				label: "刷新状态",
+			});
 		}
 		if (!libraryMatches(current, config)) {
-			return layout(
-				"index",
-				'<h1>索引状态</h1><p>运行配置指向的记忆库或作用域已更改，请<a href="/choose">重新选择记忆库</a>。</p>',
-			);
+			return page("index", IndexStatus, {
+				error: "运行配置指向的记忆库或作用域已更改，请",
+				href: "/choose",
+				label: "重新选择记忆库",
+			});
 		}
 		const status = readIndexStatus(current);
 		const percent = status.chunks
@@ -114,21 +138,15 @@ function openLibrary(path: string) {
 			interrupted: "意外中断",
 		};
 		const job = status.indexing;
-		const content = !status.semantic_enabled
-			? `<p>${indexReason("EMBEDDING_DISABLED")} 全文检索仍然可用。</p>`
-			: `<p>当前模型：${escape(current.embedding!.model)}</p>
-			<p>语义索引覆盖率：${percent}% · 已索引 ${status.embedded_chunks} / ${status.chunks} 个片段，待处理 ${status.pending_chunks} 个。</p>
-			<progress aria-label="语义索引覆盖率" max="${Math.max(1, status.chunks)}" value="${status.chunks ? status.embedded_chunks : 1}"></progress>
-			${status.chunks === 0 ? "<p>记忆库暂无可索引内容。</p>" : status.pending_chunks ? "<p>未索引内容仍可通过全文检索查找；语义检索尚未覆盖全部内容。</p>" : "<p>当前内容已全部建立语义索引。</p>"}
-			<p>UTC 今日请求：${status.usage.requests} / ${status.max_requests_per_day}（整个数据库共享）。</p>
-			<p>最近任务：${job ? states[job.state] : "尚未运行"}${job ? ` · 更新时间（UTC）：${escape(job.updated_at)}` : ""}</p>
-			${job?.reason ? `<p role="status">${indexReason(job.reason)}</p>` : ""}
-			<p>在项目目录运行以下命令可继续建立索引。Ctrl+C 会在当前批次结束后停止，已完成进度会保留。</p>
-			<pre><code>${escape(`vp run index "${resolve(path)}"`)}</code></pre>`;
-		return layout(
-			"index",
-			`<h1>索引状态</h1>${content}<p><a href="/index-status">刷新状态</a></p><p>此页只读取状态，不会发起 embedding 请求。</p>`,
-		);
+		return page("index", IndexStatus, {
+			status,
+			percent,
+			model: current.embedding?.model,
+			disabled: indexReason("EMBEDDING_DISABLED"),
+			state: job ? states[job.state] : "尚未运行",
+			reason: job?.reason && indexReason(job.reason),
+			command: `vp run index "${resolve(path)}"`,
+		});
 	}
 	// Filter and sort before LIMIT so browsing does not load every episode body into memory.
 	db.function("episode_time_order", { deterministic: true }, (body, basis) => {
@@ -159,17 +177,10 @@ function openLibrary(path: string) {
 	function listing(url: URL, tab: Tab) {
 		const q = (url.searchParams.get("q") ?? "").slice(0, 512);
 		if (tab === "people") {
-			const page = findPeople(db, config, q, url.searchParams.get("after") ?? "");
-			const cards = page.items.map(personCard).join("");
-			const next = page.next
-				? `<a href="/?tab=people&amp;q=${encodeURIComponent(q)}&amp;after=${encodeURIComponent(page.next)}">下一页</a>`
-				: "";
-			return layout(
-				tab,
-				`<h1>人物档案</h1><form><input type="hidden" name="tab" value="people"><input name="q" aria-label="姓名或身份线索" placeholder="姓名或身份线索" value="${escape(q)}"><button>筛选</button></form>${cards || "<p>没有符合条件的人物档案。</p>"}${next}`,
-			);
+			const people = findPeople(db, config, q, url.searchParams.get("after") ?? "");
+			return page(tab, PeopleList, { q, people: people.items, next: people.next });
 		}
-		const page = Math.min(
+		const pageNumber = Math.min(
 			Math.max(0, Number.parseInt(url.searchParams.get("page") ?? "0", 10) || 0),
 			1000000,
 		);
@@ -185,13 +196,7 @@ function openLibrary(path: string) {
 				(to && !validTimestamp(to)) ||
 				(from && to && Date.parse(from) > Date.parse(to)))
 		)
-			return layout(
-				tab,
-				'<p role="alert">时间筛选无效，请使用带时区的 ISO 时间，且开始时间不能晚于结束时间。</p>',
-			);
-		const timeControls = episodes
-			? `<select name="time_basis" aria-label="时间依据"><option value="happen" ${basis === "happen" ? "selected" : ""}>发生时间</option><option value="review" ${basis === "review" ? "selected" : ""}>记录时间</option></select><label>从（含时区）<input name="from" aria-label="起始时间（含时区）" placeholder="2026-10-01T00:00:00+08:00" value="${escape(from ?? "")}"></label><label>至（含时区）<input name="to" aria-label="结束时间（含时区）" placeholder="2026-10-31T23:59:59+08:00" value="${escape(to ?? "")}"></label><label><input type="checkbox" name="unknown" value="1" ${unknown ? "checked" : ""}>仅发生时间未知</label>`
-			: "";
+			return page(tab, MemoryList, { tab, invalid: true, heading: names[tab] });
 
 		const query = episodes
 			? "SELECT e.body" +
@@ -209,30 +214,36 @@ function openLibrary(path: string) {
 				...scope,
 				q,
 				...(episodes ? [q, basis, from ?? "", to ?? "", unknown ? 1 : 0, basis] : []),
-				page * 30,
+				pageNumber * 30,
 			) as Row[];
-		const cards = rows
-			.slice(0, 30)
-			.map((row) => {
-				if (episodes) {
-					const e = readEpisodeBody(row.body);
-					return `<article><small>发生：${escape(describeEventTime(e.happen))}<br>记录：${escape(e.review)} · 修订 ${e.revision}</small><h2><a href="/episode/${encodeURIComponent(e.id)}">${escape(e.title)}</a></h2><p>${escape(e.summary.slice(0, 180))}</p></article>`;
-				}
-				const m = JSON.parse(row.body) as Material;
-				const path = "/material/" + encodeURIComponent(m.id);
-				const photo =
-					tab === "album" && m.media?.kind === "photo"
-						? `<img loading="lazy" alt="" src="/thumbnail/${encodeURIComponent(m.id)}">`
-						: "";
-				return `<article><a href="${path}">${photo}${escape(m.text.slice(0, 100))}</a><br><small>${m.media ? escape(m.media.original_name) + " · " : ""}${escape(m.received_at)}</small></article>`;
-			})
-			.join("");
-		const link = (n: number, label: string) =>
-			`<a href="/?tab=${tab}&amp;q=${encodeURIComponent(q)}&amp;page=${n}${episodes ? `&amp;time_basis=${basis}&amp;from=${encodeURIComponent(from ?? "")}&amp;to=${encodeURIComponent(to ?? "")}&amp;unknown=${unknown ? "1" : "0"}` : ""}">${label}</a>`;
-		return layout(
+		const visible = rows.slice(0, 30);
+		const link = (n: number) => {
+			const params = new URLSearchParams({ tab, q, page: String(n) });
+			if (episodes)
+				for (const [k, v] of Object.entries({
+					time_basis: basis,
+					from: from ?? "",
+					to: to ?? "",
+					unknown: unknown ? "1" : "0",
+				}))
+					params.set(k, v);
+			return "/?" + params;
+		};
+		return page(tab, MemoryList, {
 			tab,
-			`<h1>${names[tab]}</h1><form><input type="hidden" name="tab" value="${tab}"><input name="q" aria-label="筛选当前列表" placeholder="筛选当前列表" value="${escape(q)}">${timeControls}<button>筛选</button></form>${episodes ? "<p>发生时间按可能范围与窗口相交筛选；月、年精度不代表持续整月或整年。未知发生时间排在末尾，指定发生时间窗口时不命中。</p>" : ""}<div class="${tab === "album" ? "grid" : ""}">${cards || "<p>没有符合条件的记录</p>"}</div>${page ? link(page - 1, "上一页") : ""} ${rows.length > 30 ? link(page + 1, "下一页") : ""}`,
-		);
+			heading: names[tab],
+			q,
+			episodes: episodes ? visible.map((row) => readEpisodeBody(row.body)) : undefined,
+			materials: episodes
+				? undefined
+				: visible.map((row) => JSON.parse(row.body) as Material),
+			basis,
+			from,
+			to,
+			unknown,
+			prev: pageNumber ? link(pageNumber - 1) : undefined,
+			next: rows.length > 30 ? link(pageNumber + 1) : undefined,
+		});
 	}
 	function detail(id: string, episode: boolean, rev: string | null) {
 		if (episode) {
@@ -242,38 +253,20 @@ function openLibrary(path: string) {
 			const history = rows.map((row) => readEpisodeBody(row.body));
 			const e = rev ? history.find((x) => String(x.revision) === rev) : history[0];
 			if (!e) return;
-			const parts = (label: string, values: string[]) =>
-				values.length
-					? `<section><h2>${label}</h2>${values.map((x) => "<p>" + escape(x) + "</p>").join("")}</section>`
-					: "";
-			const sources = e.source_ids
-				.map((key) => {
-					const m = material(key);
-					return m
-						? `<li><a href="/material/${encodeURIComponent(key)}">${escape(m.media?.original_name ?? m.text.slice(0, 80))}</a></li>`
-						: "";
-				})
-				.join("");
-			return layout(
-				"episodes",
-				`<h1>${escape(e.title)}</h1><small>模型整理 · ${escape(e.review)}</small><p>发生：${escape(describeEventTime(e.happen))}</p>${e.happen?.source_ids?.length ? `<p>时间依据：${e.happen.source_ids.map((id) => `<a href="/material/${encodeURIComponent(id)}">${escape(id)}</a>`).join(" · ")}</p>` : ""}<p>${escape(e.summary)}</p>${parts(
-					"经过",
-					e.beats.map((x) => x.text),
-				)}${parts(
-					"当时的理解",
-					e.interpretations.map((x) => x.text),
-				)}${parts("尚不清楚", e.unknowns)}<h2>原始材料</h2><ul>${sources}</ul><h2>修订历史</h2>${history.map((x) => `<a href="?rev=${x.revision}">版本 ${x.revision}</a>`).join(" · ")}`,
-			);
+			return page("episodes", EpisodeDetail, {
+				episode: e,
+				time: describeEventTime(e.happen),
+				parts: [
+					["经过", e.beats.map((x) => x.text)],
+					["当时的理解", e.interpretations.map((x) => x.text)],
+					["尚不清楚", e.unknowns],
+				],
+				sources: e.source_ids.map(material).filter(Boolean),
+				history,
+			});
 		}
 		const m = material(id);
 		if (!m) return;
-		const src = "/media/" + encodeURIComponent(id);
-		const media = m.media
-			? m.media.kind === "photo"
-				? `<img src="${src}" alt="归档照片">`
-				: `<video controls preload="metadata" src="${src}"></video>`
-			: "";
-		const range = m.media?.observed_range_ms;
 		const corrections = db
 			.prepare("SELECT m.id" + materialFrom + " AND json_extract(m.body,'$.corrects')=?")
 			.all(...scope, id) as { id: string }[];
@@ -285,44 +278,15 @@ function openLibrary(path: string) {
 					" AND EXISTS(SELECT 1 FROM episode_sources r WHERE r.episode=e.id AND r.revision=e.revision AND r.source=?) ORDER BY e.rowid DESC",
 			)
 			.all(...scope, id) as { id: string; title: string }[];
-		const backlinks = related
-			.map(
-				(e) =>
-					`<li><a href="/episode/${encodeURIComponent(e.id)}">${escape(e.title)}</a></li>`,
-			)
-			.join("");
-		return layout(
-			m.media ? "album" : "materials",
-			`<h1>${escape(m.media?.original_name ?? "原始材料")}</h1><small>${escape(m.speaker)} · ${escape(m.received_at)}</small>${media}<p>${escape(m.text)}</p><h2>记录范围</h2><p>${escape(m.coverage)}</p>${range ? `<p>报告的观看区间：${range[0] / 1000}–${range[1] / 1000} 秒</p>` : ""}<h2>关联经历</h2>${backlinks ? "<ul>" + backlinks + "</ul>" : "<p>暂无经历引用这条材料。</p>"}${m.corrects ? `<a href="/material/${encodeURIComponent(m.corrects)}">查看被更正的原记录</a>` : ""}${corrections.map((x) => `<p><a href="/material/${encodeURIComponent(x.id)}">查看后续更正</a></p>`).join("")}`,
-		);
-	}
-	function personCard(person: { id: string; name: string; identity: string }) {
-		return `<article><h2><a href="/person/${encodeURIComponent(person.id)}">${escape(person.name)}</a></h2><p>${escape(person.identity)}</p></article>`;
+		return page(m.media ? "album" : "materials", MaterialDetail, {
+			material: m,
+			related,
+			corrections,
+		});
 	}
 	function personDetail(id: string) {
 		const person = readPerson(db, config, id);
-		if (!person) return;
-		const history = person.history
-			.toReversed()
-			.map((review) => {
-				const evidence = review.episodes
-					.map((ref) => {
-						return `<li><a href="/episode/${encodeURIComponent(ref.id)}?rev=${ref.revision}">${escape(ref.title)} · 版本 ${ref.revision}</a></li>`;
-					})
-					.join("");
-				const label =
-					review.impression === null
-						? "关联经历"
-						: review.revision === person.current_impression?.revision
-							? "当前印象"
-							: "以往印象";
-				return `<section><h2>${label}</h2><small>${escape(review.formed_at)}</small>${review.impression ? "<p>" + escape(review.impression) + "</p>" : ""}<ul>${evidence}</ul></section>`;
-			})
-			.join("");
-		return layout(
-			"people",
-			`<h1>${escape(person.name)}</h1><p>${escape(person.identity)}</p>${history}`,
-		);
+		if (person) return page("people", PersonDetail, { person });
 	}
 	async function search(query: string, lexical: boolean) {
 		const result = await searchLibrary(config, query, lexical);
@@ -332,22 +296,26 @@ function openLibrary(path: string) {
 			excerpt?: string;
 			stale: boolean;
 		}[];
-		const people = findPeople(db, config, query).items.map(personCard).join("");
-		const cards =
-			people +
-			rows
-				.map((item) => {
-					const m = item.kind === "material" ? material(item.id) : undefined;
-					const label = item.kind === "episode" ? "经历" : m?.media ? "相册材料" : "材料";
-					return `<article><small>${label}${item.stale ? " · 有后续更正" : ""}</small><p><a href="/${item.kind}/${encodeURIComponent(item.id)}">${escape(item.excerpt ?? "展开记录")}</a></p></article>`;
-				})
-				.join("");
-		return layout(
-			"episodes",
-			`<h1>搜索结果</h1><p>${escape(query)} · ${result.diagnostics.semantic.used ? "混合检索" : "全文检索"}</p>${result.diagnostics.semantic.reason && result.diagnostics.semantic.reason !== "SYNC_LEXICAL_ONLY" ? `<p role="status">${indexReason(result.diagnostics.semantic.reason)} <a href="/index-status">查看索引状态</a></p>` : ""}${result.diagnostics.semantic.used && result.diagnostics.semantic.pending_chunks ? `<p>语义索引尚有 ${result.diagnostics.semantic.pending_chunks} 个片段待处理。<a href="/index-status">查看索引状态</a></p>` : ""}${cards || "<p>没有匹配的记录。</p>"}`,
-		);
+		const people = findPeople(db, config, query).items;
+		const items = rows.map((item) => ({
+			...item,
+			label:
+				item.kind === "episode" ? "经历" : material(item.id)?.media ? "相册材料" : "材料",
+		}));
+		const semantic = result.diagnostics.semantic;
+		return page("episodes", SearchResults, {
+			query,
+			people,
+			items,
+			semantic,
+			reason:
+				semantic.reason &&
+				semantic.reason !== "SYNC_LEXICAL_ONLY" &&
+				indexReason(semantic.reason),
+		});
 	}
 	return {
+		selection: randomBytes(16).toString("hex"),
 		configPath: resolve(path),
 		settings: (form?: URLSearchParams) => settingsPage(path, config, form),
 		indexStatus,
@@ -372,40 +340,27 @@ function localDirectory(value: string) {
 }
 function entry(directory: string, useStartupConfig: boolean) {
 	const query = useStartupConfig ? "current=1" : "dir=" + encodeURIComponent(directory);
-	return layout(
-		null,
-		`<div class="library-entry"><form method="post" action="/select?${query}"><button>打开记忆库</button></form><div class="entry-directory"><span title="${escape(directory)}">当前目录：${escape(directory)}</span><a href="/choose?browse=1&amp;dir=${encodeURIComponent(directory)}">更换目录</a></div></div>`,
-	);
+	return page(null, LibraryEntry, { query, directory });
 }
 function picker(requested: string, error = "") {
-	let listing = "";
+	let folder;
 	try {
 		const path = localDirectory(requested);
 		const entries = readdirSync(path, { withFileTypes: true });
-		const browse = (dest: string, label: string) =>
-			`<a href="/choose?browse=1&amp;dir=${encodeURIComponent(dest)}">${escape(label)}</a>`;
-		if (entries.some((entry) => entry.name === "runtime.json" && entry.isFile()))
-			listing += `<a href="/choose?dir=${encodeURIComponent(path)}">使用此目录</a>`;
-		else listing += "<p>此目录没有 runtime.json，请选择记忆库所在的文件夹。</p>";
-		listing +=
-			"<section>" +
-			(dirname(path) !== path ? browse(dirname(path), "↑ 上一级") : "") +
-			entries
-				.filter((entry) => entry.isDirectory())
-				.sort((a, b) => a.name.localeCompare(b.name))
-				.map(
-					(entry) =>
-						"<div>" + browse(join(path, entry.name), entry.name + "/") + "</div>",
-				)
-				.join("") +
-			"</section>";
+		const links = entries
+			.filter((e) => e.isDirectory())
+			.sort((a, b) => a.name.localeCompare(b.name))
+			.map((e) => ({ path: join(path, e.name), label: e.name + "/" }));
+		if (dirname(path) !== path) links.unshift({ path: dirname(path), label: "↑ 上一级" });
+		folder = {
+			path,
+			links,
+			usable: entries.some((e) => e.name === "runtime.json" && e.isFile()),
+		};
 	} catch {
 		error ||= "无法读取目录，请输入本机可访问的绝对路径。";
 	}
-	return layout(
-		null,
-		`<h1>更换目录</h1><form action="/choose"><input type="hidden" name="browse" value="1"><input class="directory-path" name="dir" aria-label="目录路径" value="${escape(requested)}"><button>浏览</button></form>${error ? "<p role=alert>" + escape(error) + "</p>" : ""}${listing}`,
-	);
+	return page(null, DirectoryPicker, { requested, error, folder });
 }
 type Session = { library?: ReturnType<typeof openLibrary> };
 const stylesheet = readFileSync(new URL("./viewer.css", import.meta.url));
@@ -488,12 +443,13 @@ const server = createServer(async (req, res) => {
 				session.library?.close();
 				session.library = library;
 			} catch {
-				res.writeHead(400, { "content-type": "text/html; charset=utf-8" });
-				res.end(
+				await sendPage(
+					res,
 					picker(
 						dir || startingFolder,
 						"无法打开记忆库，请检查配置、数据库版本和读取权限。",
 					),
+					400,
 				);
 				return;
 			}
@@ -501,7 +457,13 @@ const server = createServer(async (req, res) => {
 			res.end();
 			return;
 		}
-		if (url.pathname === "/settings" && (req.method === "GET" || req.method === "POST")) {
+		const reviewRoute = /^\/reviews\/([a-f0-9]{64})$/.exec(url.pathname);
+		const traitRoute = /^\/traits(?:\/([a-f0-9-]{36}))?$/.exec(url.pathname);
+		if (
+			(url.pathname === "/settings" ||
+				((reviewRoute || traitRoute) && req.method === "POST")) &&
+			(req.method === "GET" || req.method === "POST")
+		) {
 			const selected = session.library;
 			if (!selected) return fail(404);
 			let form: URLSearchParams | undefined;
@@ -516,34 +478,105 @@ const server = createServer(async (req, res) => {
 				let length = 0;
 				for await (const chunk of req) {
 					length += chunk.length;
-					if (length > 1024) return fail(413);
+					if (length > (traitRoute ? 65536 : 1024)) return fail(413);
 					chunks.push(chunk);
 				}
 				if (session.library !== selected || sessions.get(token!) !== session)
 					return fail(409);
 				form = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
 			}
-			const page = selected.settings(form);
-			if (page.status === 303) {
+			if ((reviewRoute || traitRoute) && form) {
+				if (
+					form.get("selection") !== selected.selection ||
+					!libraryMatches(loadRuntimeConfig(selected.configPath), selected.config)
+				)
+					return fail(409);
+				const action = form.get("action");
+				const store = new MaterialStore(
+					selected.config.database,
+					undefined,
+					undefined,
+					"audit",
+				);
+				try {
+					if (traitRoute) {
+						const version = traitRoute[1];
+						if (version) {
+							store.settings.act(
+								selected.config,
+								version,
+								action ?? "",
+								form.get("mode"),
+							);
+						} else {
+							if (action !== "save") return fail(400);
+							const { space, character, world } = selected.config;
+							store.saveOwnerSetting(
+								{ space, character, world },
+								form.get("operation") ?? "",
+								{
+									target: form.get("target"),
+									title: form.get("title"),
+									body: form.get("body"),
+									...(form.has("id")
+										? {
+												id: form.get("id"),
+												expected_version: form.get("version"),
+											}
+										: {}),
+								},
+								form.get("mode"),
+							);
+						}
+						res.writeHead(303, { location: url.pathname });
+						res.end();
+						return;
+					}
+					if (!reviewRoute || (action !== "check" && action !== "undo")) return fail(400);
+					const code = store.reviews.act(selected.config, reviewRoute[1]!, action);
+					if (code === 303) {
+						res.writeHead(303, { location: url.pathname });
+						res.end();
+					} else if (code === 409) {
+						const detail = store.reviews.detail(selected.config, reviewRoute[1]!);
+						await sendPage(
+							res,
+							page("reviews", ReviewDetail, {
+								detail,
+								selection: selected.selection,
+								conflict: true,
+							}),
+							409,
+						);
+					} else return fail(code);
+				} finally {
+					store.close();
+				}
+				return;
+			}
+			const { status, ...settings } = selected.settings(form);
+			if (status === 303) {
 				res.writeHead(303, { location: "/settings?saved=1" });
 				res.end();
 			} else {
-				const saved =
-					page.status === 200 && url.searchParams.get("saved") === "1"
-						? '<p role="status">设置已保存。</p>'
-						: "";
-				res.writeHead(page.status, { "content-type": "text/html; charset=utf-8" });
-				res.end(layout("settings", saved + page.html));
+				await sendPage(
+					res,
+					page("settings", ViewerSettings, {
+						...settings,
+						saved: url.searchParams.get("saved") === "1",
+					}),
+					status,
+				);
 			}
 			return;
 		}
 		if (req.method !== "GET") return fail(405);
 		if (url.pathname === "/choose" || (url.pathname === "/" && !session.library)) {
-			res.setHeader("Content-Type", "text/html; charset=utf-8");
 			const directory =
 				url.searchParams.get("dir") ??
 				dirname(session.library?.configPath ?? resolve(runtime));
-			res.end(
+			await sendPage(
+				res,
 				url.searchParams.has("open_error")
 					? picker(directory, "无法打开当前记忆库，请检查配置或选择其他目录。")
 					: url.searchParams.has("browse")
@@ -559,8 +592,55 @@ const server = createServer(async (req, res) => {
 		}
 		if (!session.library) return fail(404);
 		const { search, material, listing, detail, config } = session.library;
-		let html: string | undefined;
-		if (url.pathname === "/search") {
+		let html: VNode | undefined;
+		if (traitRoute) {
+			const store = new MaterialStore(config.database, undefined, undefined, "inspect");
+			try {
+				const props = {
+					selection: session.library.selection,
+					operation: randomBytes(16).toString("hex"),
+				};
+				if (traitRoute[1]) {
+					html = page("traits", SettingDetail, {
+						...props,
+						...store.settings.detail(config, traitRoute[1]),
+						world: config.world,
+					});
+				} else {
+					const rows = store.settings.history(config);
+					html = page("traits", SettingList, {
+						...props,
+						active: effectiveSettings(rows),
+						pending: rows.filter((r) => r.state === "proposed"),
+					});
+				}
+			} finally {
+				store.close();
+			}
+		} else if (url.pathname === "/reviews" || reviewRoute) {
+			const store = new MaterialStore(config.database, undefined, undefined, "inspect");
+			try {
+				if (reviewRoute) {
+					const detail = store.reviews.detail(config, reviewRoute[1]!);
+					if (!detail) return fail(404);
+					html = page("reviews", ReviewDetail, {
+						detail,
+						selection: session.library.selection,
+					});
+				} else {
+					const number = Math.min(
+						1000000,
+						Math.max(0, parseInt(url.searchParams.get("page") ?? "0", 10) || 0),
+					);
+					html = page("reviews", ReviewList, {
+						...store.reviews.list(config, number),
+						pageNumber: number,
+					});
+				}
+			} finally {
+				store.close();
+			}
+		} else if (url.pathname === "/search") {
 			const q = url.searchParams.get("q")?.trim();
 			if (!q || Array.from(q).length > 512) return fail(400);
 			const selected = session.library;
@@ -643,9 +723,21 @@ const server = createServer(async (req, res) => {
 					: detail(id, match[1] === "episode", url.searchParams.get("rev"));
 		}
 		if (!html) return fail(404);
-		res.setHeader("Content-Type", "text/html; charset=utf-8");
-		res.end(html);
+		await sendPage(res, html);
 	} catch (error) {
+		if (error instanceof MaterialError) {
+			const status =
+				error.code === "NOT_FOUND" ? 404 : error.code === "VALIDATION_ERROR" ? 400 : 409;
+			res.writeHead(status, { "content-type": "text/plain; charset=utf-8" });
+			res.end(
+				status === 409
+					? "设定已更新，请返回设定页核对当前版本。"
+					: status === 404
+						? "找不到该记录。"
+						: "请检查设定内容和修改方式。",
+			);
+			return;
+		}
 		fail((error as NodeJS.ErrnoException).code === "ENOENT" ? 404 : 500);
 	}
 });

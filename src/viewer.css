@@ -94,6 +94,7 @@ form {
 	gap: 8px;
 	flex-wrap: wrap;
 }
+textarea,
 input,
 button,
 select {
@@ -131,6 +132,11 @@ progress {
 }
 .settings input {
 	width: 10rem;
+}
+.trait-form input,
+.trait-form textarea {
+	width: 100%;
+	max-width: 100%;
 }
 .settings button {
 	justify-self: start;
@@ -202,4 +208,18 @@ main:has(.library-entry) {
 }
 .directory-path {
 	flex: 1;
+}
+
+.review-changes {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(min(16rem, 100%), 1fr));
+	gap: 1rem;
+}
+.review-changes dt {
+	color: #51635d;
+}
+.review-changes dd {
+	margin: 0;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
 }
